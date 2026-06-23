@@ -1,0 +1,240 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem 1rem;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+header h1 {
+    font-size: 2rem;
+    color: #fff;
+    margin-bottom: 0.5rem;
+}
+
+.subtitle {
+    color: #888;
+    font-size: 0.95rem;
+}
+
+/* Drop Zone */
+.drop-zone {
+    border: 2px dashed #444;
+    border-radius: 12px;
+    padding: 3rem 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    background: #16213e;
+    position: relative;
+    overflow: hidden;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+    border-color: #4ecca3;
+    background: #1a2742;
+}
+
+.drop-zone__icon {
+    font-size: 2.5rem;
+    display: block;
+    margin-bottom: 0.5rem;
+}
+
+.drop-zone__preview {
+    max-width: 100%;
+    max-height: 250px;
+    border-radius: 8px;
+    object-fit: contain;
+}
+
+.hint {
+    font-size: 0.8rem;
+    color: #666;
+    margin-top: 0.25rem;
+}
+
+/* Options */
+.options {
+    margin-top: 1rem;
+}
+
+.option-group {
+    display: flex;
+    gap: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.radio-label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+    font-size: 0.95rem;
+}
+
+.radio-label .hint {
+    margin-top: 0;
+}
+
+textarea {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid #333;
+    border-radius: 8px;
+    background: #16213e;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 0.9rem;
+    resize: vertical;
+}
+
+textarea::placeholder {
+    color: #555;
+}
+
+/* Buttons */
+button {
+    display: block;
+    width: 100%;
+    padding: 0.85rem;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, opacity 0.2s;
+    margin-top: 1rem;
+}
+
+#generateBtn {
+    background: #4ecca3;
+    color: #1a1a2e;
+}
+
+#generateBtn:hover:not(:disabled) {
+    background: #3db892;
+}
+
+#generateBtn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.btn-primary {
+    background: #4ecca3;
+    color: #1a1a2e;
+}
+
+.btn-primary:hover {
+    background: #3db892;
+}
+
+.btn-secondary {
+    background: #333;
+    color: #e0e0e0;
+}
+
+.btn-secondary:hover {
+    background: #444;
+}
+
+/* Status / Loading */
+.status {
+    text-align: center;
+    padding: 2rem;
+}
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid #333;
+    border-top-color: #4ecca3;
+    border-radius: 50%;
+    margin: 0 auto 1rem;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.error {
+    background: #3a1a1a;
+    border: 1px solid #aa3333;
+    border-radius: 8px;
+    padding: 1rem;
+    margin-top: 1rem;
+    color: #ff6b6b;
+}
+
+/* Viewer */
+.viewer-section {
+    margin-top: 2rem;
+    text-align: center;
+}
+
+.viewer-section h2 {
+    margin-bottom: 0.5rem;
+}
+
+.description {
+    color: #888;
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+}
+
+.viewer-wrapper {
+    background: #0f0f23;
+    border-radius: 12px;
+    padding: 1rem;
+    display: inline-block;
+}
+
+#skinViewer {
+    border-radius: 8px;
+}
+
+.viewer-controls {
+    display: flex;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.viewer-controls button {
+    flex: 1;
+    margin-top: 0;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    .container {
+        padding: 1rem;
+    }
+
+    header h1 {
+        font-size: 1.5rem;
+    }
+
+    .option-group {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+}

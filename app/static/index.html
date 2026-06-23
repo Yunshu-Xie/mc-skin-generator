@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MC Skin Generator</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>⛏️ Minecraft 皮肤生成器</h1>
+            <p class="subtitle">上传图片，AI 自动生成 Minecraft 皮肤</p>
+        </header>
+
+        <main>
+            <section class="upload-section">
+                <form id="uploadForm">
+                    <div class="drop-zone" id="dropZone">
+                        <div class="drop-zone__prompt" id="dropPrompt">
+                            <span class="drop-zone__icon">📷</span>
+                            <p>拖拽图片到此处，或点击上传</p>
+                            <p class="hint">支持 JPG / PNG / WebP，最大 5MB</p>
+                        </div>
+                        <img id="preview" class="drop-zone__preview" hidden>
+                        <input type="file" id="imageInput" accept="image/jpeg,image/png,image/webp,image/gif" hidden>
+                    </div>
+
+                    <div class="options">
+                        <div class="option-group">
+                            <label class="radio-label">
+                                <input type="radio" name="model" value="classic" checked>
+                                <span>Classic (Steve)</span>
+                                <span class="hint">4px 手臂</span>
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="model" value="slim">
+                                <span>Slim (Alex)</span>
+                                <span class="hint">3px 手臂</span>
+                            </label>
+                        </div>
+
+                        <textarea id="styleNotes" placeholder="可选：风格备注（如"卡通风格"、"像素感更强"）" rows="2"></textarea>
+                    </div>
+
+                    <button type="submit" id="generateBtn" disabled>生成皮肤</button>
+                </form>
+
+                <div id="status" class="status" hidden>
+                    <div class="spinner"></div>
+                    <p id="statusText">分析图片中...</p>
+                </div>
+
+                <div id="error" class="error" hidden></div>
+            </section>
+
+            <section class="viewer-section" id="viewerSection" hidden>
+                <h2>生成结果</h2>
+                <p id="skinDescription" class="description"></p>
+
+                <div class="viewer-wrapper">
+                    <canvas id="skinViewer"></canvas>
+                </div>
+
+                <div class="viewer-controls">
+                    <button id="downloadBtn" class="btn-primary">⬇ 下载 .png</button>
+                    <button id="resetBtn" class="btn-secondary">🔄 重新生成</button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/skinview3d@3.1.0/bundles/skinview3d.bundle.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>
