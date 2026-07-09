@@ -7,7 +7,7 @@ Built with FastAPI, vanilla HTML/JS (no build step), Pillow for image assembly, 
 ## Features
 
 - **Image → skin** — drop in any JPEG / PNG / WebP / GIF (≤ 5 MB) and get a valid Minecraft skin texture
-- **One AI call, mostly procedural** — a single Vision call draws the head (6 faces) and body_front pixel-by-pixel (the parts that actually need to look like the photo), optionally up to 4 more "detail faces" for distinctive design elements (back logo, sleeve pattern, etc.), plus a fixed-role color palette; everything else is filled in by code
+- **One AI call, mostly procedural** — a single Vision call draws 11 mandatory faces pixel-by-pixel — the head (6 faces), body_front, and the four limb fronts (right/left arm, right/left leg) — the parts that actually need to look like the photo, optionally up to 4 more "detail faces" for distinctive design elements (back logo, sleeve pattern, etc.), plus a fixed-role color palette; everything else is filled in by code
 - **Conversational color edits** — after generating, describe a color change in plain language ("make the shirt blue") and it's applied in place, almost for free (no image re-upload, no Vision call)
 - **Classic & Slim** — pick Steve (4 px arms) or Alex (3 px arms); the only difference is arm UV widths, handled by the coordinate map
 - **3D preview** — generated skins render in-browser with a walking animation via [skinview3d](https://github.com/bs-community/skinview3d)
@@ -17,10 +17,10 @@ Built with FastAPI, vanilla HTML/JS (no build step), Pillow for image assembly, 
 
 Asking a model to emit all ~4096 skin pixels is expensive and unreliable — earlier versions used a two-step pipeline (analyze, then paint everything) that could burn 13k+ tokens per run and still hit output-length limits. Since the arms/legs/back of a Minecraft skin are usually flat clothing colors anyway, only the head and shirt front carry the character's actual likeness:
 
-1. **One Vision call** — the model looks at the photo and returns a fixed-role palette (10 named colors for skin/hair/eyes/shirt/arms/pants/shoes, plus up to 6 freeform slots) + indexed pixel grids for head (6 faces), body_front, and any optional detail faces it opportunistically draws.
-2. **Procedural fill** (`app/services/procedural.py`) — every other face (body back/top/bottom/sides, both arms, both legs) is a shaded flat fill (per-orientation HSL lightness shading via `shade_face`), built directly from the named colors. No AI call needed for ~29 of the 36 base regions.
+1. **One Vision call** — the model looks at the photo and returns a fixed-role palette (10 named colors for skin/hair/eyes/shirt/arms/pants/shoes, plus up to 6 freeform slots) + indexed pixel grids for head (6 faces), body_front, the four limb-front faces (right/left arm front, right/left leg front), and any optional detail faces it opportunistically draws.
+2. **Procedural fill** (`app/services/procedural.py`) — every other face is derived from its part's own front face: back/left/right copy the front face's per-row color via `propagate_front_row` (so a clothing boundary visible on the front — e.g. a sleeve ending partway down the arm — stays consistent all the way around the limb), while the small top/bottom end-caps are a flat fill from the named colors. No synthetic shading is added anywhere — Minecraft's own in-game lighting already shades the 3D model. No AI call needed for ~25 of the 36 base regions.
 
-The AI's palette uses 10 fixed-role slots (skin/hair/eye/shirt×2/arm×2/pants×2/shoe) followed by up to 6 freeform slots for logos or patterns on faces the model opportunistically decides to draw (up to 4 extra, beyond the mandatory 7). Both the AI-drawn pixels and the procedural fill read from this same array, which is also what makes conversational color edits cheap — changing one palette entry retints everywhere it's used, with no new Vision call.
+The AI's palette uses 10 fixed-role slots (skin/hair/eye/shirt×2/arm×2/pants×2/shoe) followed by up to 6 freeform slots for logos or patterns on faces the model opportunistically decides to draw (up to 4 extra, beyond the mandatory 11: head's 6 faces + body_front + the 4 limb-front faces). Both the AI-drawn pixels and the procedural fill read from this same array, which is also what makes conversational color edits cheap — changing one palette entry retints everywhere it's used, with no new Vision call.
 
 If the AI response is incomplete (bad palette index, missing grid, missing required color), it retries the single call up to 2 times.
 
@@ -65,8 +65,8 @@ app/
 ├── routers/
 │   └── skin.py                 # POST /api/generate, POST /api/skin/{id}/edit, GET /api/skin/{id}.png
 ├── services/
-│   ├── claude_vision.py        # Gemini (OpenAI-compatible) client → single call, head+body_front(+detail faces) pixels + fixed-role palette
-│   ├── procedural.py           # shaded flat-fill for the rest of the body/arms/legs
+│   ├── claude_vision.py        # Gemini (OpenAI-compatible) client → single call, 11 mandatory faces (+optional detail faces) pixels + fixed-role palette
+│   ├── procedural.py           # front-row propagation (back/left/right copy their part's front) + flat-fill caps for the rest
 │   ├── skin_store.py           # persists palette + raw pixel-index grids per skin, for later edits
 │   ├── skin_map.py             # 64×64 UV coordinates (FaceRect) for Classic/Slim
 │   └── skin_assembler.py       # pixel data → 64×64 RGBA PNG via Pillow
@@ -110,7 +110,7 @@ Tests cover the UV map, the skin assembler, and the API layer with the AI pipeli
 - **OpenAI-compatible SDK** — uses the `openai` package with `base_url` pointed at Gemini's OpenAI-compatible endpoint, so swapping in another compatible provider is trivial
 - **Per-request model choice** — `ai_model=flash` vs `flash-lite` lets you A/B the two free-tier Gemini models without restarting the server; `GEMINI_DEFAULT_MODEL` picks the default when omitted
 - **No database** — generated skins are plain PNG files named by a short UUID in `skins/`
-- **Mostly procedural** — only head + body_front (+ occasional AI-chosen detail faces) are AI-painted pixel-by-pixel; the rest is a deterministic shaded fill from named colors (`app/services/procedural.py`), which is most of the token savings
+- **Mostly procedural** — only the 11 mandatory faces (head + body_front + the 4 limb fronts), plus any occasional AI-chosen detail faces, are AI-painted pixel-by-pixel; the rest is deterministically derived from each part's front face via `propagate_front_row` (`app/services/procedural.py`), which is most of the token savings
 - **Retry** — an incomplete AI response (bad palette index, missing grid, missing required color) triggers up to 2 retries of the single call
 - **Classic vs Slim** — the sole difference is arm front/back width (4 → 3 px), resolved purely in `skin_map.py`
 

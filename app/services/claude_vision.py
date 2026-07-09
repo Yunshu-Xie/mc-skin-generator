@@ -4,11 +4,15 @@ faces) pixels + a fixed-role color palette.
 Uses the Gemini API's OpenAI-compatible endpoint. Callers pick between
 gemini-2.5-flash and gemini-2.5-flash-lite per request via `ai_model`.
 
-Only head (6 faces), body_front, and any faces the model opportunistically
-chooses to draw are generated pixel-by-pixel. Everything else is filled in
-procedurally by app.services.procedural, reading named colors out of the
-same palette the AI-drawn pixels reference. See
+11 faces are mandatory and generated pixel-by-pixel: head (6 faces),
+body_front, and the four limb-front faces (right/left arm front,
+right/left leg front). The model may also opportunistically draw up to 4
+more "detail faces" (e.g. a back logo, a sleeve pattern) using the same
+indexed format. Everything else is filled in procedurally by
+app.services.procedural, reading named colors out of the same palette the
+AI-drawn pixels reference. See
 docs/superpowers/specs/2026-07-09-skin-fidelity-and-color-edit-design.md
+and docs/superpowers/specs/2026-07-10-limb-front-propagation-and-face-detail-design.md
 for the full design.
 """
 
@@ -414,6 +418,44 @@ async def apply_color_edit(
     model: ModelType = state["model"]
     ai_model: AIModel = state["ai_model"]
     palette = list(state["palette"])
+
+    if len(palette) < MIN_PALETTE_SIZE:
+        # Persisted state from an incomplete generation (retries exhausted but
+        # still saved) can have a palette shorter than the fixed-role slots
+        # expect. Don't crash — just leave the skin as-is.
+        logger.warning(
+            "Persisted palette has only %d entries (need >= %d); skipping color edit",
+            len(palette),
+            MIN_PALETTE_SIZE,
+        )
+        pixel_data = {
+            key: decode_indexed_grid(grid, palette) for key, grid in state["pixel_grids"].items()
+        }
+        colors = {
+            name: palette[idx] for name, idx in PALETTE_ROLES.items() if idx < len(palette)
+        }
+        pixel_data.update(
+            generate_procedural_regions(
+                pixel_data, colors, model, exclude_keys=frozenset(pixel_data.keys())
+            )
+        )
+        metadata = {
+            "description": state.get("description", ""),
+            "skin_tone": colors.get("skin_tone", ""),
+            "hair_color": colors.get("hair_color", ""),
+            "regions_generated": len(pixel_data),
+            "ai_model": ai_model,
+            "changed_roles": [],
+        }
+        persist_state = {
+            "model": model,
+            "ai_model": ai_model,
+            "palette": palette,
+            "pixel_grids": state["pixel_grids"],
+            "description": state.get("description", ""),
+            "hair_style": state.get("hair_style", ""),
+        }
+        return pixel_data, metadata, persist_state
 
     current_roles = {name: palette[idx] for name, idx in PALETTE_ROLES.items()}
     changes = await interpret_color_edit(current_roles, instruction, ai_model)

@@ -286,6 +286,32 @@ async def test_apply_color_edit_retints_palette_and_reassembles(mock_interpret):
     )
 
 
+@patch(
+    "app.services.claude_vision.interpret_color_edit",
+    new_callable=AsyncMock,
+    return_value={"shirt_main": "#0000FF"},
+)
+async def test_apply_color_edit_short_palette_is_noop(mock_interpret):
+    """A persisted skin whose palette is shorter than MIN_PALETTE_SIZE (e.g. from an
+    incomplete generation that still got persisted) must not raise IndexError —
+    apply_color_edit should return the skin unchanged instead."""
+    state = {
+        "model": "classic",
+        "ai_model": "flash",
+        "palette": ["#C4A882", "#5B3A1A", "#3B5998"],  # only 3 entries, < MIN_PALETTE_SIZE
+        "pixel_grids": {"body_front": [[0] * 8 for _ in range(12)]},
+        "description": "a test character",
+        "hair_style": "short",
+    }
+
+    pixel_data, metadata, persist_state = await apply_color_edit(state, "make it blue")
+
+    assert metadata["changed_roles"] == []
+    assert persist_state["palette"] == state["palette"]
+    assert "body_front" in pixel_data
+    mock_interpret.assert_not_awaited()
+
+
 def test_build_prompt_includes_face_features_guidance():
     prompt = _build_prompt("classic")
     assert "face_features" in prompt
