@@ -10,7 +10,7 @@ Minecraft skin generator: upload an image → Gemini AI analyzes it → generate
 
 ```bash
 # Install dependencies
-pip install fastapi uvicorn openai Pillow python-multipart pydantic-settings pytest httpx ruff
+pip install fastapi uvicorn openai Pillow python-multipart pydantic-settings pytest pytest-asyncio httpx ruff
 
 # Run the development server
 uvicorn app.main:app --reload
@@ -45,11 +45,19 @@ ruff format .
 - 上传图片先用 Pillow 压缩到 `MAX_IMAGE_DIMENSION` 并重新编码为 JPEG（`_prepare_image`），再 base64 发送
 - 一次 Vision 调用同时完成"看图分析"和"画像素"：返回一个 ≤8 色的小调色板 + head 6 个面和 body_front 的调色板索引网格（共 480 个像素，AI 逐像素生成的只有这部分）+ 约 10 个顶层颜色字段（`skin_tone` / `hair_color` / `eye_color` / `shirt_main` / `shirt_shadow` / `arm_main` / `arm_shadow` / `pants_main` / `pants_shadow` / `shoe_color`）
 - `ai_model`（`"flash"` / `"flash-lite"`）通过 `_resolve_model_name` 映射到 `GEMINI_MODEL_FLASH` / `GEMINI_MODEL_FLASH_LITE`，逐请求可选，方便对比两个模型的效果，返回的 `metadata.ai_model` 会回显实际用的是哪个
-- `_decode_indexed_grid` 把索引网格还原成 hex 颜色网格
+- `decode_indexed_grid` 把索引网格还原成 hex 颜色网格
 - 响应不完整（调色板缺失、网格尺寸不对、必需颜色字段缺失）时整体重试，最多 2 次
+- 调色板结构固定：`palette[0..9]` 是命名角色（`PALETTE_ROLES` in `skin_map.py`：skin_tone/hair_color/eye_color/shirt_main/shirt_shadow/arm_main/arm_shadow/pants_main/pants_shadow/shoe_color），`palette[10..15]`（最多 6 个）是 AI 自由选择的细节色，用于可选的"特色面"
+- 除了固定的 7 个面，AI 可以自主追加最多 4 个"特色面"（比如背后徽标、袖子图案），用同样的索引格式，判断标准写在 prompt 里；未被追加的面照常走 `procedural.py`
 
 ### Procedural Fill (`app/services/procedural.py`)
-除了 head 和 body_front，其余 29 个基础区域（body 的其余 5 面、双臂全部 6 面、双腿全部 6 面）**不经过 AI**，由 `generate_procedural_regions` 用上面的顶层颜色字段程序化生成：`flat_fill_with_border` 对每个面做纯色填充 + 1px 边框加深阴影。左右两侧直接复用同一套颜色（不需要真正的像素镜像，因为填充规则本身就是对称的）。这是 token 优化的核心：AI 逐像素生成的区域从 ~4096 降到 480，配合合并为单次调用，单次运行 token 消耗从 ~13k-16k 降到 ~2k-3.5k 量级。
+除了 head 和 body_front（以及 AI 自主追加的特色面），其余基础区域（body 的其余 5 面、双臂全部 6 面、双腿全部 6 面）**不经过 AI**，由 `generate_procedural_regions` 用上面的命名颜色程序化生成：`shade_face` 基于 HSL 明度调整，按面的朝向（top/front/back/left/right/bottom）做不同程度的明暗偏移 + 1px 边框加深阴影，让纯色部件也有立体感。左右两侧直接复用同一套颜色（不需要真正的像素镜像，因为填充规则本身就是对称的）；`exclude_keys` 参数让 AI 自主画的特色面不被程序化覆盖。这是 token 优化的核心：AI 逐像素生成的区域从 ~4096 降到 480 左右，配合合并为单次调用，单次运行 token 消耗从 ~13k-16k 降到 ~2k-3.5k 量级。
+
+### Skin State Persistence (`app/services/skin_store.py`)
+生成时把完整调色板 + 每个 AI 画的面的原始索引网格（不是解码后的 hex）存成 `skins/<id>.json`，和 PNG 放在一起。这是对话式改色的基础——改色只需要换调色板里一个槽位的值，重新解码已经存好的索引网格即可，不需要重新调用 Vision。
+
+### Conversational Color Edit
+`POST /api/skin/{id}/edit`，body 是 `{"instruction": "..."}`。`claude_vision.interpret_color_edit` 用一次纯文本（不带图）小调用把指令映射到 `PALETTE_ROLES` 里的具名角色 + 新 hex 值；`claude_vision.apply_color_edit` 把改动写回调色板对应槽位，重新解码 AI 面 + 重新程序化生成 + 重新组装，原地覆盖同一个 `skin_id`。
 
 ### Skin UV Map (`app/services/skin_map.py`)
 所有 Minecraft 64×64 皮肤 UV 坐标，以 `FaceRect(x, y, w, h)` dataclass 表示。`PIXEL_KEY_MAP` 将模型输出的 key（如 `"head_front"`）映射到区域组 + 面名。`get_all_regions(model)` 根据 Classic/Slim 返回正确坐标集。
@@ -58,7 +66,8 @@ ruff format .
 接收像素数据 dict（AI 解码结果 + procedural 结果合并后的完整 hex 颜色网格）→ 用 Pillow 创建 64×64 RGBA 图片，在正确的 UV 坐标处绘制每个面。验证网格尺寸，静默跳过格式错误的数据。这一层的接口没有变化，仍然只认 `{key: 2D hex 数组}`。
 
 ### API Layer (`app/routers/skin.py`)
-- `POST /api/generate` — 接收 multipart 图片上传 + model 类型 + 可选 `ai_model`（`"flash"`/`"flash-lite"`，缺省用 `GEMINI_DEFAULT_MODEL`），返回 skin_id + skin_url
+- `POST /api/generate` — 接收 multipart 图片上传 + model 类型 + 可选 `ai_model`（`"flash"`/`"flash-lite"`，缺省用 `GEMINI_DEFAULT_MODEL`），返回 skin_id + skin_url，同时把生成状态存进 `skin_store`
+- `POST /api/skin/{id}/edit` — 接收 `{"instruction": "..."}`，对已生成的皮肤做对话式改色，返回结构和 `/api/generate` 一致
 - `GET /api/skin/{id}.png` — 从 `skins/` 目录提供生成的 PNG
 
 ### Frontend (`app/static/`)
