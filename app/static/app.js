@@ -12,9 +12,12 @@ const viewerSection = document.getElementById("viewerSection");
 const skinDescription = document.getElementById("skinDescription");
 const downloadBtn = document.getElementById("downloadBtn");
 const resetBtn = document.getElementById("resetBtn");
+const editInstruction = document.getElementById("editInstruction");
+const editBtn = document.getElementById("editBtn");
 
 let viewer = null;
 let currentSkinUrl = null;
+let currentSkinId = null;
 
 // ── Drop Zone ──
 dropZone.addEventListener("click", () => imageInput.click());
@@ -98,7 +101,7 @@ uploadForm.addEventListener("submit", async (e) => {
         }
 
         statusDiv.hidden = true;
-        showViewer(data.skin_url, data.model, data.metadata);
+        showViewer(data.skin_id, data.skin_url, data.model, data.metadata);
     } catch (err) {
         statusDiv.hidden = true;
         errorDiv.textContent = `❌ ${err.message}`;
@@ -108,8 +111,9 @@ uploadForm.addEventListener("submit", async (e) => {
 });
 
 // ── 3D Viewer ──
-function showViewer(skinUrl, model, metadata) {
+function showViewer(skinId, skinUrl, model, metadata) {
     viewerSection.hidden = false;
+    currentSkinId = skinId;
     currentSkinUrl = skinUrl;
 
     if (metadata && metadata.description) {
@@ -150,6 +154,37 @@ downloadBtn.addEventListener("click", () => {
     document.body.removeChild(a);
 });
 
+// ── Conversational Color Edit ──
+editBtn.addEventListener("click", async () => {
+    const instruction = editInstruction.value.trim();
+    if (!instruction || !currentSkinId) return;
+
+    editBtn.disabled = true;
+    errorDiv.hidden = true;
+
+    try {
+        const response = await fetch(`/api/skin/${currentSkinId}/edit`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ instruction }),
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.detail || "修改失败");
+        }
+
+        const bustedUrl = `${data.skin_url}?t=${Date.now()}`;
+        showViewer(data.skin_id, bustedUrl, data.model, data.metadata);
+        editInstruction.value = "";
+    } catch (err) {
+        errorDiv.textContent = `❌ ${err.message}`;
+        errorDiv.hidden = false;
+    } finally {
+        editBtn.disabled = false;
+    }
+});
+
 // ── Reset ──
 resetBtn.addEventListener("click", () => {
     viewerSection.hidden = true;
@@ -158,6 +193,8 @@ resetBtn.addEventListener("click", () => {
         viewer = null;
     }
     currentSkinUrl = null;
+    currentSkinId = null;
+    editInstruction.value = "";
     preview.hidden = true;
     preview.src = "";
     dropPrompt.hidden = false;
