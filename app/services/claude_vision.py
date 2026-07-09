@@ -76,6 +76,12 @@ Output ONLY a JSON object (no markdown, no explanation) with this structure:
   "description": "Brief description of what you see",
   "hair_style": "short|long|bald|hat|helmet",
 
+  "face_features": {{
+    "eye_shape": "narrow or round, based on the photo's eyes",
+    "eyebrow_color": "#HEX, or 'none' if no distinct eyebrows are visible",
+    "mouth_color": "#HEX of the person's lip/mouth color"
+  }},
+
   "palette": [
     "#HEX index 0 = skin_tone",
     "#HEX index 1 = hair_color",
@@ -88,7 +94,7 @@ Output ONLY a JSON object (no markdown, no explanation) with this structure:
     "#HEX index 8 = pants_shadow",
     "#HEX index 9 = shoe_color",
     "... optionally 0-6 more freeform colors (index 10-15) for logos, \
-patterns, or accessories you want to draw"
+patterns, accessories, or distinct eyebrow/mouth colors"
   ],
 
   "head_front":      [[palette index per pixel] × 8 cols] × 8 rows,
@@ -110,9 +116,16 @@ hair_color, eye_color, shirt_main, shirt_shadow, arm_main, arm_shadow, \
 pants_main, pants_shadow, shoe_color. Index 10+ are your choice, up to 16 total.
 - head_front: row 0-1 = hair/forehead, row 2-3 = eyes, row 4 = nose, \
 row 5-6 = mouth/chin, row 7 = neck
+- Fill in "face_features" first, based on careful observation of the \
+photo — it guides the pixel choices below but is not itself validated or \
+rendered.
 - Eyes and mouth in head_front MUST use a palette index other than \
-skin_tone (0) and hair_color (1) — reuse eye_color (2) or another index, so \
-facial features are visible against the skin
+skin_tone (0) and hair_color (1) — reuse eye_color (2) by default. If \
+face_features.eye_shape is "narrow", render each eye 1 pixel wide; if \
+"round", render each eye 2 pixels wide. If face_features.mouth_color is \
+meaningfully different from eye_color, use a freeform slot (10+) for the \
+mouth instead of reusing eye_color. If face_features.eyebrow_color isn't \
+"none", add a row of eyebrow-colored pixels at row 1.
 - body_front, right_arm_front, left_arm_front, right_leg_front, \
 left_leg_front are the front-facing torso/limb pixels visible in most \
 photos — paint them to match the photo's actual clothing and skin as \
@@ -272,7 +285,7 @@ async def _call_vision(
 
     response = await client.chat.completions.create(
         model=_resolve_model_name(ai_model),
-        max_tokens=4000,
+        max_tokens=5000,
         temperature=0.3,
         # Gemini 2.5 defaults to "thinking" mode, which eats into max_tokens
         # before any visible output — without this the response gets cut off.

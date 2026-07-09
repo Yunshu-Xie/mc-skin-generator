@@ -7,6 +7,7 @@ from PIL import Image
 
 from app.config import settings
 from app.services.claude_vision import (
+    _build_prompt,
     _is_valid_hex,
     _prepare_image,
     _resolve_model_name,
@@ -283,3 +284,22 @@ async def test_apply_color_edit_retints_palette_and_reassembles(mock_interpret):
         "把衬衫改成蓝色",
         "flash",
     )
+
+
+def test_build_prompt_includes_face_features_guidance():
+    prompt = _build_prompt("classic")
+    assert "face_features" in prompt
+    assert "eye_shape" in prompt
+    assert "eyebrow_color" in prompt
+    assert "mouth_color" in prompt
+
+
+def test_build_prompt_includes_mandatory_limb_fronts():
+    prompt = _build_prompt("classic")
+    for key in (
+        "right_arm_front",
+        "left_arm_front",
+        "right_leg_front",
+        "left_leg_front",
+    ):
+        assert key in prompt
