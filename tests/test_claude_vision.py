@@ -1,6 +1,7 @@
 """Tests for claude_vision — indexed-grid decoding, response validation, image prep."""
 
 import io
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from PIL import Image
 
@@ -10,7 +11,9 @@ from app.services.claude_vision import (
     _prepare_image,
     _resolve_model_name,
     _validate_and_decode,
+    apply_color_edit,
     decode_indexed_grid,
+    interpret_color_edit,
 )
 from app.services.procedural import AI_GENERATED_KEYS
 from app.services.skin_map import MAX_PALETTE_SIZE, MIN_PALETTE_SIZE, PALETTE_ROLES
@@ -175,3 +178,85 @@ def test_prepare_image_leaves_small_image_dimensions_alone():
 
     out_img = Image.open(io.BytesIO(out_bytes))
     assert out_img.size == (100, 50)
+
+
+def _mock_chat_response(content: str) -> MagicMock:
+    response = MagicMock()
+    response.choices = [MagicMock(message=MagicMock(content=content))]
+    return response
+
+
+@patch("app.services.claude_vision._get_client")
+async def test_interpret_color_edit_maps_instruction_to_role(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_chat_response('{"shirt_main": "#0000FF"}')
+    )
+    mock_get_client.return_value = mock_client
+
+    changes = await interpret_color_edit(
+        {"shirt_main": "#AA3355", "hair_color": "#5B3A1A"},
+        "把衬衫改成蓝色",
+        "flash-lite",
+    )
+
+    assert changes == {"shirt_main": "#0000FF"}
+
+
+@patch("app.services.claude_vision._get_client")
+async def test_interpret_color_edit_ignores_unknown_roles_and_bad_hex(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_chat_response(
+            '{"shirt_main": "#0000FF", "made_up_role": "#FFFFFF", "hair_color": "blue"}'
+        )
+    )
+    mock_get_client.return_value = mock_client
+
+    changes = await interpret_color_edit(
+        {"shirt_main": "#AA3355", "hair_color": "#5B3A1A"}, "make it blue", "flash"
+    )
+
+    assert changes == {"shirt_main": "#0000FF"}
+
+
+@patch("app.services.claude_vision._get_client")
+async def test_interpret_color_edit_returns_empty_on_bad_json(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=_mock_chat_response("not json at all")
+    )
+    mock_get_client.return_value = mock_client
+
+    changes = await interpret_color_edit({"shirt_main": "#AA3355"}, "anything", "flash")
+
+    assert changes == {}
+
+
+@patch(
+    "app.services.claude_vision.interpret_color_edit",
+    new_callable=AsyncMock,
+    return_value={"shirt_main": "#0000FF"},
+)
+async def test_apply_color_edit_retints_palette_and_reassembles(mock_interpret):
+    state = {
+        "model": "classic",
+        "ai_model": "flash",
+        "palette": _fixed_palette(),
+        "pixel_grids": {"body_front": [[3] * 8 for _ in range(12)]},
+        "description": "a test character",
+        "hair_style": "short",
+    }
+
+    pixel_data, metadata, persist_state = await apply_color_edit(state, "把衬衫改成蓝色")
+
+    assert pixel_data["body_front"][0][0] == "#0000FF"  # index 3 now retinted
+    assert persist_state["palette"][3] == "#0000FF"
+    assert persist_state["pixel_grids"] == state["pixel_grids"]  # raw indices untouched
+    assert metadata["changed_roles"] == ["shirt_main"]
+    assert "body_back" in pixel_data  # procedural fill still runs for the rest
+    mock_interpret.assert_awaited_once_with(
+        {name: _fixed_palette()[idx] for name, idx in PALETTE_ROLES.items()},
+        "把衬衫改成蓝色",
+        "flash",
+    )

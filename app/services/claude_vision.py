@@ -333,3 +333,95 @@ async def generate_skin_data(
     }
 
     return pixel_data, metadata, persist_state
+
+
+EDIT_MAX_TOKENS = 300
+
+
+async def interpret_color_edit(
+    current_roles: dict[str, str], instruction: str, ai_model: AIModel
+) -> dict[str, str]:
+    """Text-only call: map a free-text instruction to changed named color roles.
+
+    Returns a dict of role name -> new hex value, containing only the roles
+    that should change. Returns {} if nothing recognized or parsing fails.
+    """
+    client = _get_client()
+    roles_json = json.dumps(current_roles, indent=2)
+    prompt = f"""You are editing the colors of an existing Minecraft skin design.
+
+Current named colors:
+{roles_json}
+
+User's instruction: "{instruction}"
+
+Output ONLY a JSON object containing the roles that should change and their \
+new color as "#RRGGBB". Only use these exact role names: \
+{", ".join(current_roles.keys())}. If the instruction doesn't clearly map to \
+any of these roles, output {{}}."""
+
+    response = await client.chat.completions.create(
+        model=_resolve_model_name(ai_model),
+        max_tokens=EDIT_MAX_TOKENS,
+        temperature=0.2,
+        reasoning_effort="none",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = response.choices[0].message.content or ""
+    try:
+        changes = _extract_json(text)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(changes, dict):
+        return {}
+    return {
+        role: value
+        for role, value in changes.items()
+        if role in current_roles and _is_valid_hex(value)
+    }
+
+
+async def apply_color_edit(
+    state: dict[str, Any], instruction: str
+) -> tuple[dict[str, list[list[str]]], dict[str, Any], dict[str, Any]]:
+    """Apply a conversational color edit to a persisted skin state.
+
+    Returns (pixel_data, metadata, persist_state) — same shapes as
+    generate_skin_data, ready to reassemble the PNG and re-save the state.
+    """
+    model: ModelType = state["model"]
+    ai_model: AIModel = state["ai_model"]
+    palette = list(state["palette"])
+
+    current_roles = {name: palette[idx] for name, idx in PALETTE_ROLES.items()}
+    changes = await interpret_color_edit(current_roles, instruction, ai_model)
+    for role, hex_value in changes.items():
+        palette[PALETTE_ROLES[role]] = hex_value
+
+    pixel_data: dict[str, list[list[str]]] = {
+        key: decode_indexed_grid(grid, palette) for key, grid in state["pixel_grids"].items()
+    }
+    colors = {name: palette[idx] for name, idx in PALETTE_ROLES.items()}
+    pixel_data.update(
+        generate_procedural_regions(colors, model, exclude_keys=frozenset(pixel_data.keys()))
+    )
+
+    metadata = {
+        "description": state.get("description", ""),
+        "skin_tone": colors["skin_tone"],
+        "hair_color": colors["hair_color"],
+        "regions_generated": len(pixel_data),
+        "ai_model": ai_model,
+        "changed_roles": list(changes.keys()),
+    }
+
+    persist_state = {
+        "model": model,
+        "ai_model": ai_model,
+        "palette": palette,
+        "pixel_grids": state["pixel_grids"],
+        "description": state.get("description", ""),
+        "hair_style": state.get("hair_style", ""),
+    }
+
+    return pixel_data, metadata, persist_state
