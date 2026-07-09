@@ -22,11 +22,17 @@ async def generate_skin(
     image: UploadFile = File(...),
     model: str = Form("classic"),
     style_notes: str = Form(""),
+    ai_model: str = Form(None),
 ) -> SkinGenerateResponse:
     """Upload an image and generate a Minecraft skin."""
     # Validate model type
     if model not in ("classic", "slim"):
         raise HTTPException(400, "model must be 'classic' or 'slim'")
+
+    # Validate AI model choice (which Gemini variant to use for this generation)
+    ai_model = ai_model or settings.gemini_default_model
+    if ai_model not in ("flash", "flash-lite"):
+        raise HTTPException(400, "ai_model must be 'flash' or 'flash-lite'")
 
     # Validate file type
     content_type = image.content_type or ""
@@ -50,6 +56,7 @@ async def generate_skin(
             media_type=content_type,
             model=model_type,
             style_notes=style_notes,
+            ai_model=ai_model,
         )
     except Exception as e:
         raise HTTPException(500, f"Skin generation failed: {e}") from e

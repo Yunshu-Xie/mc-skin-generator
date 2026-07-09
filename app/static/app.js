@@ -64,6 +64,7 @@ uploadForm.addEventListener("submit", async (e) => {
     formData.append("image", imageInput.files[0]);
     formData.append("model", document.querySelector('input[name="model"]:checked').value);
     formData.append("style_notes", document.getElementById("styleNotes").value);
+    formData.append("ai_model", document.querySelector('input[name="aiModel"]:checked').value);
 
     // Show loading
     generateBtn.disabled = true;
@@ -112,7 +113,8 @@ function showViewer(skinUrl, model, metadata) {
     currentSkinUrl = skinUrl;
 
     if (metadata && metadata.description) {
-        skinDescription.textContent = metadata.description;
+        const modelLabel = metadata.ai_model === "flash-lite" ? "Flash-Lite" : "Flash";
+        skinDescription.textContent = `[${modelLabel}] ${metadata.description}`;
     }
 
     if (viewer) {

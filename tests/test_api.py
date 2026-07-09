@@ -105,6 +105,35 @@ def test_generate_skin_invalid_model(client, dummy_image_bytes):
     assert response.status_code == 400
 
 
+def test_generate_skin_invalid_ai_model(client, dummy_image_bytes):
+    """Invalid ai_model choice should return 400."""
+    response = client.post(
+        "/api/generate",
+        files={"image": ("test.png", dummy_image_bytes, "image/png")},
+        data={"model": "classic", "ai_model": "gpt-4"},
+    )
+    assert response.status_code == 400
+
+
+@patch("app.routers.skin.generate_skin_data")
+def test_generate_skin_passes_ai_model_choice(mock_generate, client, dummy_image_bytes):
+    """ai_model from the request should be forwarded to generate_skin_data."""
+    mock_generate.return_value = (
+        _make_dummy_pixel_data(),
+        {"description": "Test", "regions_generated": 36, "ai_model": "flash-lite"},
+    )
+
+    response = client.post(
+        "/api/generate",
+        files={"image": ("test.png", dummy_image_bytes, "image/png")},
+        data={"model": "classic", "ai_model": "flash-lite"},
+    )
+
+    assert response.status_code == 200
+    assert mock_generate.call_args.kwargs["ai_model"] == "flash-lite"
+    assert response.json()["metadata"]["ai_model"] == "flash-lite"
+
+
 def test_generate_skin_no_file(client):
     """Missing image should return 422."""
     response = client.post("/api/generate", data={"model": "classic"})
