@@ -69,15 +69,29 @@ def _fixed_palette(n_freeform: int = 0) -> list[str]:
     return base + [f"#{i:02X}{i:02X}{i:02X}" for i in range(10, 10 + n_freeform)]
 
 
+_MANDATORY_FACE_DIMS = {
+    "head_front": (8, 8),
+    "head_back": (8, 8),
+    "head_top": (8, 8),
+    "head_bottom": (8, 8),
+    "head_left": (8, 8),
+    "head_right": (8, 8),
+    "body_front": (12, 8),
+    "right_arm_front": (12, 4),
+    "left_arm_front": (12, 4),
+    "right_leg_front": (12, 4),
+    "left_leg_front": (12, 4),
+}
+
+
 def _valid_response(n_freeform: int = 0, extra_faces: dict | None = None) -> dict:
     data = {
         "description": "A test character",
         "hair_style": "short",
         "palette": _fixed_palette(n_freeform),
     }
-    for key in AI_GENERATED_KEYS:
-        h = 12 if key == "body_front" else 8
-        data[key] = [[0] * 8 for _ in range(h)]
+    for key, (h, w) in _MANDATORY_FACE_DIMS.items():
+        data[key] = [[0] * w for _ in range(h)]
     if extra_faces:
         data.update(extra_faces)
     return data
@@ -154,6 +168,15 @@ def test_validate_and_decode_wrong_grid_size_is_incomplete():
     pixel_data, _raw, _colors, _metadata, ok = _validate_and_decode(data, "classic")
     assert ok is False
     assert "head_front" not in pixel_data
+    assert "body_front" in pixel_data  # other mandatory grids still decoded
+
+
+def test_validate_and_decode_missing_arm_front_is_incomplete():
+    data = _valid_response()
+    del data["right_arm_front"]
+    pixel_data, _raw, _colors, _metadata, ok = _validate_and_decode(data, "classic")
+    assert ok is False
+    assert "right_arm_front" not in pixel_data
     assert "body_front" in pixel_data  # other mandatory grids still decoded
 
 

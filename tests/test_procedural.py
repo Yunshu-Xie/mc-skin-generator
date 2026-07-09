@@ -1,50 +1,61 @@
-"""Tests for procedural — shaded flat-fill generation for non-AI-painted faces."""
+"""Tests for procedural — front-row propagation for non-AI-painted wrap faces."""
 
 from app.services.procedural import (
     AI_GENERATED_KEYS,
     generate_procedural_regions,
-    shade_face,
+    propagate_front_row,
 )
 from app.services.skin_map import PIXEL_KEY_MAP, get_all_regions
 
 
-def test_shade_face_shape():
-    grid = shade_face(4, 4, "#FF0000", "front")
-    assert len(grid) == 4
-    assert all(len(row) == 4 for row in grid)
+def test_ai_generated_keys_includes_all_four_limb_fronts():
+    assert AI_GENERATED_KEYS == {
+        "head_front",
+        "head_back",
+        "head_top",
+        "head_bottom",
+        "head_left",
+        "head_right",
+        "body_front",
+        "right_arm_front",
+        "left_arm_front",
+        "right_leg_front",
+        "left_leg_front",
+    }
 
 
-def test_shade_face_edge_darker_than_interior():
-    import colorsys
-
-    grid = shade_face(6, 6, "#8080A0", "front")
-    edge_l = colorsys.rgb_to_hls(
-        *[int(grid[0][0].lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4)]
-    )[1]
-    interior_l = colorsys.rgb_to_hls(
-        *[int(grid[2][2].lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4)]
-    )[1]
-    assert edge_l < interior_l
+def test_propagate_front_row_uses_middle_column_per_row():
+    front = [
+        ["#111111", "#222222", "#333333"],
+        ["#AAAAAA", "#BBBBBB", "#CCCCCC"],
+    ]
+    out = propagate_front_row(front, target_width=4)
+    assert out[0] == ["#222222"] * 4
+    assert out[1] == ["#BBBBBB"] * 4
 
 
-def test_shade_face_top_lighter_than_bottom():
-    import colorsys
-
-    top = shade_face(4, 4, "#606060", "top")
-    bottom = shade_face(4, 4, "#606060", "bottom")
-    top_l = colorsys.rgb_to_hls(
-        *[int(top[1][1].lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4)]
-    )[1]
-    bottom_l = colorsys.rgb_to_hls(
-        *[int(bottom[1][1].lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4)]
-    )[1]
-    assert top_l > bottom_l
+def test_propagate_front_row_preserves_height():
+    front = [["#111111"], ["#222222"], ["#333333"]]
+    out = propagate_front_row(front, target_width=2)
+    assert len(out) == 3
 
 
-def test_shade_face_narrow_width():
-    """3px-wide grid (slim arm) still has a valid interior column."""
-    grid = shade_face(12, 3, "#0000FF", "front")
-    assert len(grid[5]) == 3
+def test_propagate_front_row_target_width_independent_of_front_width():
+    front = [["#111111", "#222222", "#333333", "#444444"]]  # 4 cols wide
+    out = propagate_front_row(front, target_width=8)
+    assert len(out[0]) == 8
+
+
+def _pixel_data_with_fronts(**overrides: list[list[str]]) -> dict[str, list[list[str]]]:
+    data = {
+        "body_front": [["#3355AA"] * 8 for _ in range(12)],
+        "right_arm_front": [["#C4A882"] * 4 for _ in range(12)],
+        "left_arm_front": [["#C4A882"] * 4 for _ in range(12)],
+        "right_leg_front": [["#223355"] * 4 for _ in range(12)],
+        "left_leg_front": [["#223355"] * 4 for _ in range(12)],
+    }
+    data.update(overrides)
+    return data
 
 
 def _colors(**overrides: str) -> dict[str, str]:
@@ -67,7 +78,7 @@ def test_generate_procedural_regions_covers_all_non_ai_faces():
         and key not in AI_GENERATED_KEYS
     }
 
-    out = generate_procedural_regions(_colors(), "classic")
+    out = generate_procedural_regions(_pixel_data_with_fronts(), _colors(), "classic")
 
     assert set(out.keys()) == expected_keys
     for key, grid in out.items():
@@ -78,31 +89,63 @@ def test_generate_procedural_regions_covers_all_non_ai_faces():
 
 
 def test_generate_procedural_regions_never_touches_ai_keys():
-    out = generate_procedural_regions(_colors(), "classic")
+    out = generate_procedural_regions(_pixel_data_with_fronts(), _colors(), "classic")
     assert AI_GENERATED_KEYS.isdisjoint(out.keys())
 
 
-def test_generate_procedural_regions_respects_exclude_keys():
+def test_generate_procedural_regions_wrap_faces_match_front_rows():
+    front = [[f"#{i:02X}{i:02X}{i:02X}"] * 8 for i in range(12)]  # row i -> shade #i,i,i
     out = generate_procedural_regions(
-        _colors(), "classic", exclude_keys=frozenset({"right_arm_front"})
+        _pixel_data_with_fronts(body_front=front), _colors(), "classic"
     )
-    assert "right_arm_front" not in out
-    assert "right_arm_back" in out  # sibling face still procedural
+    for row_idx, row in enumerate(front):
+        row_color = row[len(row) // 2]
+        assert out["body_back"][row_idx] == [row_color] * 8
+        assert out["body_left"][row_idx] == [row_color] * 4
+        assert out["body_right"][row_idx] == [row_color] * 4
 
 
-def test_generate_procedural_regions_slim_arm_width():
-    out = generate_procedural_regions(_colors(), "slim")
-    assert len(out["right_arm_front"][0]) == 3
-    assert len(out["left_arm_front"][0]) == 3
+def test_generate_procedural_regions_top_bottom_are_flat_named_color():
+    out = generate_procedural_regions(_pixel_data_with_fronts(), _colors(), "classic")
+    assert all(cell == "#3355AA" for row in out["body_top"] for cell in row)
+    assert all(cell == "#3355AA" for row in out["body_bottom"] for cell in row)
+    assert all(cell == "#C4A882" for row in out["right_arm_top"] for cell in row)
+    assert all(cell == "#223355" for row in out["right_leg_top"] for cell in row)
 
 
 def test_generate_procedural_regions_leg_bottom_uses_shoe_color():
-    out = generate_procedural_regions(_colors(shoe_color="#ABCDEF"), "classic")
+    out = generate_procedural_regions(
+        _pixel_data_with_fronts(), _colors(shoe_color="#ABCDEF"), "classic"
+    )
     assert all(cell == "#ABCDEF" for row in out["right_leg_bottom"] for cell in row)
     assert all(cell == "#ABCDEF" for row in out["left_leg_bottom"] for cell in row)
 
 
+def test_generate_procedural_regions_falls_back_to_flat_when_front_missing():
+    """Old persisted skins (pre-migration) may lack the new mandatory front grids."""
+    out = generate_procedural_regions({}, _colors(), "classic")
+    assert all(cell == "#C4A882" for row in out["right_arm_back"] for cell in row)
+    assert all(cell == "#223355" for row in out["left_leg_left"] for cell in row)
+
+
+def test_generate_procedural_regions_respects_exclude_keys():
+    out = generate_procedural_regions(
+        _pixel_data_with_fronts(),
+        _colors(),
+        "classic",
+        exclude_keys=frozenset({"right_arm_back"}),
+    )
+    assert "right_arm_back" not in out
+    assert "right_arm_left" in out  # sibling face still procedural
+
+
+def test_generate_procedural_regions_slim_arm_width():
+    out = generate_procedural_regions(_pixel_data_with_fronts(), _colors(), "slim")
+    assert len(out["right_arm_top"][0]) == 3
+    assert len(out["left_arm_top"][0]) == 3
+
+
 def test_generate_procedural_regions_falls_back_to_defaults_on_missing_colors():
-    out = generate_procedural_regions({}, "classic")
+    out = generate_procedural_regions(_pixel_data_with_fronts(), {}, "classic")
     assert len(out) > 0
-    assert out["body_back"][1][1]  # some non-empty hex string
+    assert out["body_top"][0][0]  # some non-empty hex string

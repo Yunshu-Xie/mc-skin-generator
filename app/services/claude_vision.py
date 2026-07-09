@@ -91,13 +91,17 @@ Output ONLY a JSON object (no markdown, no explanation) with this structure:
 patterns, or accessories you want to draw"
   ],
 
-  "head_front":  [[palette index per pixel] × 8 cols] × 8 rows,
-  "head_back":   [8×8 palette indices],
-  "head_top":    [8×8 palette indices],
-  "head_bottom": [8×8 palette indices],
-  "head_left":   [8×8 palette indices],
-  "head_right":  [8×8 palette indices],
-  "body_front":  [12×8 palette indices]
+  "head_front":      [[palette index per pixel] × 8 cols] × 8 rows,
+  "head_back":       [8×8 palette indices],
+  "head_top":        [8×8 palette indices],
+  "head_bottom":     [8×8 palette indices],
+  "head_left":       [8×8 palette indices],
+  "head_right":      [8×8 palette indices],
+  "body_front":      [12×8 palette indices],
+  "right_arm_front": [12×{arm_w} palette indices],
+  "left_arm_front":  [12×{arm_w} palette indices],
+  "right_leg_front": [12×4 palette indices],
+  "left_leg_front":  [12×4 palette indices]
 }}
 
 PIXEL ART RULES (row-major, [row][col], every cell is an integer palette index):
@@ -109,15 +113,18 @@ row 5-6 = mouth/chin, row 7 = neck
 - Eyes and mouth in head_front MUST use a palette index other than \
 skin_tone (0) and hair_color (1) — reuse eye_color (2) or another index, so \
 facial features are visible against the skin
-- body_front: torso/shirt front, {arm_w}-px-wide-arm model
-- Most characters do NOT need anything beyond the 7 faces above. ONLY if \
+- body_front, right_arm_front, left_arm_front, right_leg_front, \
+left_leg_front are the front-facing torso/limb pixels visible in most \
+photos — paint them to match the photo's actual clothing and skin as \
+closely as you can (e.g. where a sleeve ends and skin begins)
+- Most characters do NOT need anything beyond the 11 faces above. ONLY if \
 the photo shows a genuinely distinctive design element (a back logo, a \
 sleeve pattern, a belt, a cape) that would look wrong as a flat color, add \
 up to 4 more faces as extra top-level keys using the same [row][col] \
 palette-index format. Valid extra keys: {extra_face_keys}
-- shirt_main/shirt_shadow, arm_main/arm_shadow, pants_main/pants_shadow, \
-and shoe_color are also used to procedurally color any face you don't draw \
-yourself — pick them to match the photo's clothing
+- shirt_main, arm_main, and pants_main also color the back/side faces of \
+the torso/arms/legs (derived from the front faces you paint) and any \
+top/bottom cap faces you don't draw yourself; shoe_color fills the sole
 - All palette hex values are exactly 7 chars: "#RRGGBB\""""
 
 
@@ -318,7 +325,9 @@ async def generate_skin_data(
     logger.info("Analysis complete: %s", metadata.get("description", ""))
 
     pixel_data.update(
-        generate_procedural_regions(colors, model, exclude_keys=frozenset(pixel_data.keys()))
+        generate_procedural_regions(
+            pixel_data, colors, model, exclude_keys=frozenset(pixel_data.keys())
+        )
     )
     metadata["ai_model"] = ai_model
 
@@ -403,7 +412,9 @@ async def apply_color_edit(
     }
     colors = {name: palette[idx] for name, idx in PALETTE_ROLES.items()}
     pixel_data.update(
-        generate_procedural_regions(colors, model, exclude_keys=frozenset(pixel_data.keys()))
+        generate_procedural_regions(
+            pixel_data, colors, model, exclude_keys=frozenset(pixel_data.keys())
+        )
     )
 
     metadata = {
