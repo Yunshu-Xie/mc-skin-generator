@@ -1,48 +1,58 @@
-"""Tests for procedural — flat-fill generation for non-AI-painted faces."""
+"""Tests for procedural — shaded flat-fill generation for non-AI-painted faces."""
 
 from app.services.procedural import (
     AI_GENERATED_KEYS,
-    flat_fill_with_border,
     generate_procedural_regions,
+    shade_face,
 )
 from app.services.skin_map import PIXEL_KEY_MAP, get_all_regions
 
 
-def test_flat_fill_with_border_shape():
-    grid = flat_fill_with_border(4, 4, "#FF0000", "#000000")
+def test_shade_face_shape():
+    grid = shade_face(4, 4, "#FF0000", "front")
     assert len(grid) == 4
     assert all(len(row) == 4 for row in grid)
 
 
-def test_flat_fill_with_border_colors():
-    grid = flat_fill_with_border(4, 4, "#FF0000", "#000000")
-    # Corners and edges are the shadow color
-    assert grid[0][0] == "#000000"
-    assert grid[0][3] == "#000000"
-    assert grid[3][0] == "#000000"
-    assert grid[3][3] == "#000000"
-    # Interior is the main color
-    assert grid[1][1] == "#FF0000"
-    assert grid[2][2] == "#FF0000"
+def test_shade_face_edge_darker_than_interior():
+    import colorsys
+
+    grid = shade_face(6, 6, "#8080A0", "front")
+    edge_l = colorsys.rgb_to_hls(
+        *[int(grid[0][0].lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4)]
+    )[1]
+    interior_l = colorsys.rgb_to_hls(
+        *[int(grid[2][2].lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4)]
+    )[1]
+    assert edge_l < interior_l
 
 
-def test_flat_fill_with_border_narrow_width():
+def test_shade_face_top_lighter_than_bottom():
+    import colorsys
+
+    top = shade_face(4, 4, "#606060", "top")
+    bottom = shade_face(4, 4, "#606060", "bottom")
+    top_l = colorsys.rgb_to_hls(
+        *[int(top[1][1].lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4)]
+    )[1]
+    bottom_l = colorsys.rgb_to_hls(
+        *[int(bottom[1][1].lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4)]
+    )[1]
+    assert top_l > bottom_l
+
+
+def test_shade_face_narrow_width():
     """3px-wide grid (slim arm) still has a valid interior column."""
-    grid = flat_fill_with_border(12, 3, "#0000FF", "#000011")
-    assert grid[5][0] == "#000011"
-    assert grid[5][1] == "#0000FF"
-    assert grid[5][2] == "#000011"
+    grid = shade_face(12, 3, "#0000FF", "front")
+    assert len(grid[5]) == 3
 
 
 def _colors(**overrides: str) -> dict[str, str]:
     base = {
-        "shirt_main": "#111111",
-        "shirt_shadow": "#101010",
-        "arm_main": "#222222",
-        "arm_shadow": "#202020",
-        "pants_main": "#333333",
-        "pants_shadow": "#303030",
-        "shoe_color": "#444444",
+        "shirt_main": "#3355AA",
+        "arm_main": "#C4A882",
+        "pants_main": "#223355",
+        "shoe_color": "#2B2B2B",
     }
     base.update(overrides)
     return base
@@ -72,6 +82,14 @@ def test_generate_procedural_regions_never_touches_ai_keys():
     assert AI_GENERATED_KEYS.isdisjoint(out.keys())
 
 
+def test_generate_procedural_regions_respects_exclude_keys():
+    out = generate_procedural_regions(
+        _colors(), "classic", exclude_keys=frozenset({"right_arm_front"})
+    )
+    assert "right_arm_front" not in out
+    assert "right_arm_back" in out  # sibling face still procedural
+
+
 def test_generate_procedural_regions_slim_arm_width():
     out = generate_procedural_regions(_colors(), "slim")
     assert len(out["right_arm_front"][0]) == 3
@@ -85,7 +103,6 @@ def test_generate_procedural_regions_leg_bottom_uses_shoe_color():
 
 
 def test_generate_procedural_regions_falls_back_to_defaults_on_missing_colors():
-    """Missing/blank color fields shouldn't crash — defaults fill in."""
     out = generate_procedural_regions({}, "classic")
     assert len(out) > 0
     assert out["body_back"][1][1]  # some non-empty hex string
