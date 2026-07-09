@@ -88,3 +88,32 @@ def test_region_count():
     assert len(regions) == 12
     for group in regions.values():
         assert len(group) == 6  # 6 faces per body part
+
+
+def test_palette_roles_cover_ten_fixed_slots():
+    from app.services.skin_map import PALETTE_ROLES
+
+    assert len(PALETTE_ROLES) == 10
+    assert set(PALETTE_ROLES.values()) == set(range(10))
+
+
+def test_palette_roles_expected_names():
+    from app.services.skin_map import PALETTE_ROLES
+
+    assert PALETTE_ROLES["skin_tone"] == 0
+    assert PALETTE_ROLES["hair_color"] == 1
+    assert PALETTE_ROLES["eye_color"] == 2
+    assert PALETTE_ROLES["shirt_main"] == 3
+    assert PALETTE_ROLES["shirt_shadow"] == 4
+    assert PALETTE_ROLES["arm_main"] == 5
+    assert PALETTE_ROLES["arm_shadow"] == 6
+    assert PALETTE_ROLES["pants_main"] == 7
+    assert PALETTE_ROLES["pants_shadow"] == 8
+    assert PALETTE_ROLES["shoe_color"] == 9
+
+
+def test_palette_size_bounds():
+    from app.services.skin_map import MAX_PALETTE_SIZE, MIN_PALETTE_SIZE
+
+    assert MIN_PALETTE_SIZE == 10
+    assert MAX_PALETTE_SIZE == 16
