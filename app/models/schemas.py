@@ -14,5 +14,9 @@ class SkinGenerateResponse(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class EditSkinRequest(BaseModel):
+    instruction: str
+
+
 class ErrorResponse(BaseModel):
     detail: str

@@ -7,10 +7,11 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.config import settings
-from app.models.schemas import SkinGenerateResponse
-from app.services.claude_vision import generate_skin_data
+from app.models.schemas import EditSkinRequest, SkinGenerateResponse
+from app.services.claude_vision import apply_color_edit, generate_skin_data
 from app.services.skin_assembler import assemble_skin
 from app.services.skin_map import ModelType
+from app.services.skin_store import load_skin_state, save_skin_state
 
 router = APIRouter()
 
@@ -47,11 +48,11 @@ async def generate_skin(
     if len(image_bytes) == 0:
         raise HTTPException(400, "Empty file")
 
-    # Generate skin via Claude pipeline
+    # Generate skin via the Gemini pipeline
     model_type: ModelType = "classic" if model == "classic" else "slim"
 
     try:
-        pixel_data, metadata = await generate_skin_data(
+        pixel_data, metadata, persist_state = await generate_skin_data(
             image_bytes=image_bytes,
             media_type=content_type,
             model=model_type,
@@ -64,15 +65,44 @@ async def generate_skin(
     # Assemble the 64×64 PNG
     skin_image = assemble_skin(pixel_data, model_type)
 
-    # Save to disk
+    # Save PNG + generation state (state enables later conversational edits)
     skin_id = uuid.uuid4().hex[:8]
     skin_path = Path(settings.skins_dir) / f"{skin_id}.png"
     skin_image.save(str(skin_path), "PNG")
+    save_skin_state(skin_id, **persist_state)
 
     return SkinGenerateResponse(
         skin_id=skin_id,
         skin_url=f"/api/skin/{skin_id}.png",
         model=model,
+        metadata=metadata,
+    )
+
+
+@router.post("/skin/{skin_id}/edit", response_model=SkinGenerateResponse)
+async def edit_skin(skin_id: str, body: EditSkinRequest) -> SkinGenerateResponse:
+    """Apply a conversational color edit to a previously generated skin."""
+    if not skin_id.isalnum():
+        raise HTTPException(400, "Invalid skin ID")
+
+    state = load_skin_state(skin_id)
+    if state is None:
+        raise HTTPException(404, "Skin not found")
+
+    try:
+        pixel_data, metadata, persist_state = await apply_color_edit(state, body.instruction)
+    except Exception as e:
+        raise HTTPException(500, f"Skin edit failed: {e}") from e
+
+    skin_image = assemble_skin(pixel_data, persist_state["model"])
+    skin_path = Path(settings.skins_dir) / f"{skin_id}.png"
+    skin_image.save(str(skin_path), "PNG")
+    save_skin_state(skin_id, **persist_state)
+
+    return SkinGenerateResponse(
+        skin_id=skin_id,
+        skin_url=f"/api/skin/{skin_id}.png",
+        model=persist_state["model"],
         metadata=metadata,
     )
 

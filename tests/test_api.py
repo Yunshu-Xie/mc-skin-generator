@@ -1,11 +1,11 @@
 """Integration tests for the API endpoints."""
 
+import io
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
 from PIL import Image
-import io
 
 from app.main import app
 
@@ -56,6 +56,14 @@ def test_generate_skin_success(mock_generate, client, dummy_image_bytes):
     mock_generate.return_value = (
         _make_dummy_pixel_data(),
         {"description": "Test skin", "skin_tone": "#C4A882", "regions_generated": 36},
+        {
+            "model": "classic",
+            "ai_model": "flash",
+            "palette": ["#C4A882"] * 10,
+            "pixel_grids": {"head_front": [[0] * 8 for _ in range(8)]},
+            "description": "Test skin",
+            "hair_style": "short",
+        },
     )
 
     response = client.post(
@@ -77,6 +85,14 @@ def test_generate_skin_creates_png(mock_generate, client, dummy_image_bytes):
     mock_generate.return_value = (
         _make_dummy_pixel_data(),
         {"description": "Test", "regions_generated": 36},
+        {
+            "model": "classic",
+            "ai_model": "flash",
+            "palette": ["#C4A882"] * 10,
+            "pixel_grids": {"head_front": [[0] * 8 for _ in range(8)]},
+            "description": "Test",
+            "hair_style": "short",
+        },
     )
 
     response = client.post(
@@ -121,6 +137,14 @@ def test_generate_skin_passes_ai_model_choice(mock_generate, client, dummy_image
     mock_generate.return_value = (
         _make_dummy_pixel_data(),
         {"description": "Test", "regions_generated": 36, "ai_model": "flash-lite"},
+        {
+            "model": "classic",
+            "ai_model": "flash-lite",
+            "palette": ["#C4A882"] * 10,
+            "pixel_grids": {"head_front": [[0] * 8 for _ in range(8)]},
+            "description": "Test",
+            "hair_style": "short",
+        },
     )
 
     response = client.post(
@@ -150,4 +174,63 @@ def test_get_skin_invalid_id(client):
     """Path traversal attempt should return 400."""
     response = client.get("/api/skin/../etc/passwd.png")
     # FastAPI/Starlette will either 400 or 404 this
+    assert response.status_code in (400, 404, 422)
+
+
+@patch("app.routers.skin.apply_color_edit", new_callable=AsyncMock)
+@patch("app.routers.skin.load_skin_state")
+def test_edit_skin_success(mock_load, mock_apply, client):
+    mock_load.return_value = {
+        "model": "classic",
+        "ai_model": "flash",
+        "palette": ["#C4A882"] * 10,
+        "pixel_grids": {"head_front": [[0] * 8 for _ in range(8)]},
+        "description": "a test character",
+        "hair_style": "short",
+    }
+    mock_apply.return_value = (
+        _make_dummy_pixel_data(),
+        {
+            "description": "a test character",
+            "skin_tone": "#C4A882",
+            "hair_color": "#C4A882",
+            "regions_generated": 36,
+            "ai_model": "flash",
+            "changed_roles": ["shirt_main"],
+        },
+        {
+            "model": "classic",
+            "ai_model": "flash",
+            "palette": ["#0000FF"] + ["#C4A882"] * 9,
+            "pixel_grids": {"head_front": [[0] * 8 for _ in range(8)]},
+            "description": "a test character",
+            "hair_style": "short",
+        },
+    )
+
+    response = client.post(
+        "/api/skin/deadbeef/edit",
+        json={"instruction": "把衬衫改成蓝色"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["skin_id"] == "deadbeef"
+    assert data["metadata"]["changed_roles"] == ["shirt_main"]
+
+
+@patch("app.routers.skin.load_skin_state", return_value=None)
+def test_edit_skin_not_found(mock_load, client):
+    response = client.post(
+        "/api/skin/doesnotexist/edit",
+        json={"instruction": "make it blue"},
+    )
+    assert response.status_code == 404
+
+
+def test_edit_skin_invalid_id(client):
+    response = client.post(
+        "/api/skin/../etc/edit",
+        json={"instruction": "make it blue"},
+    )
     assert response.status_code in (400, 404, 422)
