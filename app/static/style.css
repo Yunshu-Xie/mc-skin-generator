@@ -223,34 +223,6 @@ button {
     margin-top: 0;
 }
 
-.edit-controls {
-    display: flex;
-    gap: 0.5rem;
-    margin-top: 1rem;
-}
-
-.edit-controls input[type="text"] {
-    flex: 1;
-    padding: 0.75rem;
-    border: 1px solid #333;
-    border-radius: 8px;
-    background: #16213e;
-    color: #e0e0e0;
-    font-family: inherit;
-    font-size: 0.9rem;
-}
-
-.edit-controls input[type="text"]::placeholder {
-    color: #555;
-}
-
-.edit-controls button {
-    width: auto;
-    padding: 0.75rem 1.25rem;
-    margin-top: 0;
-    white-space: nowrap;
-}
-
 /* Responsive */
 @media (max-width: 600px) {
     .container {
