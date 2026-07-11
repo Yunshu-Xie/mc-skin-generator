@@ -143,13 +143,7 @@ def extract_face_colors(face_crop: Image.Image) -> dict[str, str]:
     photo pixels, rather than asking the model to guess hex values.
     """
     skin_tone = "#{:02X}{:02X}{:02X}".format(*_dominant_color(_band(face_crop, 4, 5)))
-
-    hair_pixels = _band(face_crop, 0, 2)
-    if hair_pixels.size[0] * hair_pixels.size[1] == 0:
-        hair_color = skin_tone
-    else:
-        hair_color = "#{:02X}{:02X}{:02X}".format(*_dominant_color(hair_pixels))
-
+    hair_color = "#{:02X}{:02X}{:02X}".format(*_dominant_color(_band(face_crop, 0, 2)))
     eye_color = _minority_color(_band(face_crop, 2, 4), fallback=skin_tone)
     mouth_color = _minority_color(_band(face_crop, 5, 7), fallback=skin_tone)
 

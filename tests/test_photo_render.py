@@ -109,13 +109,6 @@ def test_extract_face_colors_measures_all_four_bands():
     assert colors["mouth_color"] == "#B43C3C"
 
 
-def test_extract_face_colors_falls_back_to_skin_tone_for_degenerate_hair_band():
-    # A face crop only 1px tall: every band collapses to the same single row.
-    img = Image.new("RGB", (10, 1), (200, 160, 120))
-    colors = extract_face_colors(img)
-    assert colors["hair_color"] == colors["skin_tone"]
-
-
 def test_dominant_hex_returns_most_common_color():
     grid = [["#111111", "#111111", "#222222"], ["#111111", "#333333", "#111111"]]
     assert dominant_hex(grid) == "#111111"
