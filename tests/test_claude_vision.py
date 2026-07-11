@@ -103,8 +103,11 @@ def test_validate_and_decode_complete_response():
         _valid_response(), "classic"
     )
     assert ok is True
-    assert set(pixel_data.keys()) == AI_GENERATED_KEYS
-    assert set(raw_grids.keys()) == AI_GENERATED_KEYS
+    # pixel_data legitimately contains AI_GENERATED_KEYS's 6 mandatory keys
+    # PLUS the 5 non-front head faces, which the fixture still supplies and
+    # which still get decoded via the "optional detail face" loop.
+    assert AI_GENERATED_KEYS <= set(pixel_data.keys())
+    assert AI_GENERATED_KEYS <= set(raw_grids.keys())
     assert metadata["description"] == "A test character"
     assert colors["shirt_main"] == "#AA3355"
     assert pixel_data["head_front"][0][0] == "#C4A882"  # decoded index 0 -> skin_tone
@@ -129,7 +132,11 @@ def test_validate_and_decode_decodes_optional_detail_face():
     assert "body_back" in pixel_data
     assert "body_back" in raw_grids
     assert pixel_data["body_back"][0][0] == "#AA3355"  # index 3 -> shirt_main
-    assert metadata["regions_generated"] == len(AI_GENERATED_KEYS) + 1
+    # regions_generated counts however many keys actually got decoded: the
+    # fixture's full set of (still-11) mandatory-per-fixture faces + 1 detail
+    # face, not len(AI_GENERATED_KEYS) which is now smaller than what the
+    # fixture actually supplies.
+    assert metadata["regions_generated"] == len(_MANDATORY_FACE_DIMS) + 1
 
 
 def test_validate_and_decode_ignores_malformed_detail_face():
