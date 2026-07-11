@@ -214,26 +214,3 @@ for _face in ["front", "back", "top", "bottom", "left", "right"]:
 for _part in ["body", "right_arm", "left_arm", "right_leg", "left_leg"]:
     for _face in ["front", "back", "top", "bottom", "left", "right"]:
         PIXEL_KEY_MAP[f"{_part}_overlay_{_face}"] = (f"{_part}_overlay", _face)
-
-
-# ── Palette roles (used by claude_vision.py and procedural.py) ───
-
-# Fixed positions in the AI's `palette` output. Indices 10+ are freeform,
-# chosen by the model for logos/patterns/accessories on optional detail
-# faces. Keeping these positions fixed (rather than letting the model
-# choose) is what lets a conversational color edit retint by swapping one
-# array entry — see docs/superpowers/specs/2026-07-09-skin-fidelity-and-color-edit-design.md.
-PALETTE_ROLES: dict[str, int] = {
-    "skin_tone": 0,
-    "hair_color": 1,
-    "eye_color": 2,
-    "shirt_main": 3,
-    "shirt_shadow": 4,
-    "arm_main": 5,
-    "arm_shadow": 6,
-    "pants_main": 7,
-    "pants_shadow": 8,
-    "shoe_color": 9,
-}
-MIN_PALETTE_SIZE = 10
-MAX_PALETTE_SIZE = 16
