@@ -1,16 +1,15 @@
 """Procedural (non-AI) generation for skin faces that don't need per-pixel detail.
 
-Only head_front, body_front, and the four limb-front faces are photo/AI-derived
-(see PALETTE_ROLES in skin_map.py for the shared palette) — a front-facing
-photo never shows the back/top/sides of someone's head anyway, so those five
-head faces are a flat fill from `head_fill_color` just like the other parts'
-wrap/cap faces. Every other face is derived directly from its part's front
-face: back/left/right copy the front face's per-row color (so a clothing
-boundary visible on the front — e.g. a sleeve ending partway down the arm —
-stays consistent all the way around the limb), while top/bottom (the small
-end-cap faces) are a flat fill from a handful of named colors. No synthetic
-shading is added anywhere — Minecraft's own in-game lighting already shades
-the 3D model.
+Only head_front, body_front, and the four limb-front faces are photo/AI-derived.
+A front-facing photo never shows the back/top/sides of someone's head anyway,
+so those five head faces are a flat fill from `head_fill_color` just like the
+other parts' wrap/cap faces. Every other face is derived directly from its
+part's front face: back/left/right copy the front face's per-row color (so a
+clothing boundary visible on the front — e.g. a sleeve ending partway down the
+arm — stays consistent all the way around the limb), while top/bottom (the
+small end-cap faces) are a flat fill from a handful of named colors. No
+synthetic shading is added anywhere — Minecraft's own in-game lighting already
+shades the 3D model.
 """
 
 from __future__ import annotations
