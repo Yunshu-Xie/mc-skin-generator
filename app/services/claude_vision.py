@@ -1,19 +1,16 @@
-"""Gemini AI pipeline: single Vision call → head/body_front (+ optional detail
-faces) pixels + a fixed-role color palette.
+"""Gemini AI pipeline: single Vision call → region bounding boxes + a
+couple of categorical fields, then deterministic Pillow rendering (see
+app.services.photo_render) produces the actual pixels.
 
 Uses the Gemini API's OpenAI-compatible endpoint. Callers pick between
 gemini-2.5-flash and gemini-2.5-flash-lite per request via `ai_model`.
 
-11 faces are mandatory and generated pixel-by-pixel: head (6 faces),
-body_front, and the four limb-front faces (right/left arm front,
-right/left leg front). The model may also opportunistically draw up to 4
-more "detail faces" (e.g. a back logo, a sleeve pattern) using the same
-indexed format. Everything else is filled in procedurally by
-app.services.procedural, reading named colors out of the same palette the
-AI-drawn pixels reference. See
-docs/superpowers/specs/2026-07-09-skin-fidelity-and-color-edit-design.md
-and docs/superpowers/specs/2026-07-10-limb-front-propagation-and-face-detail-design.md
-for the full design.
+The model is asked only to locate 6 body-part regions (head, torso,
+right/left arm, right/left leg) as bounding boxes, plus classify
+hair_style and eye_shape — a much smaller, more reliable ask than
+directly authoring per-pixel palette indices. See
+docs/superpowers/specs/2026-07-10-photo-derived-pixel-rendering-design.md
+for the full design and rationale.
 """
 
 from __future__ import annotations
@@ -22,36 +19,53 @@ import base64
 import io
 import json
 import logging
-import re
 from typing import Any, Literal
 
 from openai import AsyncOpenAI
 from PIL import Image
 
 from app.config import settings
-from app.services.procedural import AI_GENERATED_KEYS, generate_procedural_regions
-from app.services.skin_map import (
-    MAX_PALETTE_SIZE,
-    MIN_PALETTE_SIZE,
-    PALETTE_ROLES,
-    PIXEL_KEY_MAP,
-    ModelType,
-    get_all_regions,
+from app.services.photo_render import (
+    Bbox,
+    build_head_front,
+    crop_region,
+    dominant_hex,
+    downsample_dominant,
+    extract_face_colors,
+    quantize_shared,
 )
+from app.services.procedural import AI_GENERATED_KEYS, generate_procedural_regions
+from app.services.skin_map import ModelType, get_all_regions
 
 logger = logging.getLogger(__name__)
 
 AIModel = Literal["flash", "flash-lite"]
 
-# Face groups eligible for the AI's optional "detail faces" — the base
-# (non-overlay) layer only; overlay (hat/jacket) groups are unused by this app.
-BASE_GROUPS = {"head", "body", "right_arm", "left_arm", "right_leg", "left_leg"}
+REGION_KEYS = ("head", "torso", "right_arm", "left_arm", "right_leg", "left_leg")
+HAIR_STYLES = ("short", "long", "bald", "hat", "helmet")
+EYE_SHAPES = ("narrow", "round")
 
-_HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+# Maps a "regions" key to the skin_map part name + the AI_GENERATED_KEYS
+# front face it produces, for every region except "head" (handled
+# separately since it's colors-plus-template, not crop-and-quantize).
+_PHOTO_PARTS = (
+    ("torso", "body", "body_front"),
+    ("right_arm", "right_arm", "right_arm_front"),
+    ("left_arm", "left_arm", "left_arm_front"),
+    ("right_leg", "right_leg", "right_leg_front"),
+    ("left_leg", "left_leg", "left_leg_front"),
+)
 
-
-def _is_valid_hex(value: Any) -> bool:
-    return isinstance(value, str) and bool(_HEX_RE.match(value))
+# Same defaults as app.services.procedural.DEFAULT_COLORS, used when a front
+# face has no photo-derived color at all (region not visible, no sibling
+# limb visible either) so its fallback raw grid matches procedural fill.
+_FRONT_FALLBACK_COLOR = {
+    "body_front": "#3B5998",
+    "right_arm_front": "#C4A882",
+    "left_arm_front": "#C4A882",
+    "right_leg_front": "#1A1A3E",
+    "left_leg_front": "#1A1A3E",
+}
 
 
 def _resolve_model_name(ai_model: AIModel) -> str:
@@ -62,87 +76,42 @@ def _resolve_model_name(ai_model: AIModel) -> str:
     )
 
 
-def _build_prompt(model: ModelType) -> str:
-    arm_w = 4 if model == "classic" else 3
-    extra_face_keys = ", ".join(
-        key
-        for key in PIXEL_KEY_MAP
-        if key not in AI_GENERATED_KEYS and PIXEL_KEY_MAP[key][0] in BASE_GROUPS
-    )
-
-    return f"""\
-You are a Minecraft skin designer. Look at this photo and design a Minecraft \
-skin based on the character/person's appearance.
+def _build_prompt() -> str:
+    return """\
+You are looking at a photo to prepare it for turning into a Minecraft skin. \
+Do NOT draw or describe any pixels — you only need to locate a few regions \
+and classify two features.
 
 Output ONLY a JSON object (no markdown, no explanation) with this structure:
 
-{{
-  "description": "Brief description of what you see",
+{
   "hair_style": "short|long|bald|hat|helmet",
+  "eye_shape": "narrow|round",
+  "regions": {
+    "head":      {"visible": true, "bbox": [x0, y0, x1, y1]},
+    "torso":     {"visible": true, "bbox": [x0, y0, x1, y1]},
+    "right_arm": {"visible": true, "bbox": [x0, y0, x1, y1]},
+    "left_arm":  {"visible": true, "bbox": [x0, y0, x1, y1]},
+    "right_leg": {"visible": true, "bbox": [x0, y0, x1, y1]},
+    "left_leg":  {"visible": true, "bbox": [x0, y0, x1, y1]}
+  }
+}
 
-  "face_features": {{
-    "eye_shape": "narrow or round, based on the photo's eyes",
-    "eyebrow_color": "#HEX, or 'none' if no distinct eyebrows are visible",
-    "mouth_color": "#HEX of the person's lip/mouth color"
-  }},
-
-  "palette": [
-    "#HEX index 0 = skin_tone",
-    "#HEX index 1 = hair_color",
-    "#HEX index 2 = eye_color",
-    "#HEX index 3 = shirt_main",
-    "#HEX index 4 = shirt_shadow",
-    "#HEX index 5 = arm_main",
-    "#HEX index 6 = arm_shadow",
-    "#HEX index 7 = pants_main",
-    "#HEX index 8 = pants_shadow",
-    "#HEX index 9 = shoe_color",
-    "... optionally 0-6 more freeform colors (index 10-15) for logos, \
-patterns, accessories, or distinct eyebrow/mouth colors"
-  ],
-
-  "head_front":      [[palette index per pixel] × 8 cols] × 8 rows,
-  "head_back":       [8×8 palette indices],
-  "head_top":        [8×8 palette indices],
-  "head_bottom":     [8×8 palette indices],
-  "head_left":       [8×8 palette indices],
-  "head_right":      [8×8 palette indices],
-  "body_front":      [12×8 palette indices],
-  "right_arm_front": [12×{arm_w} palette indices],
-  "left_arm_front":  [12×{arm_w} palette indices],
-  "right_leg_front": [12×4 palette indices],
-  "left_leg_front":  [12×4 palette indices]
-}}
-
-PIXEL ART RULES (row-major, [row][col], every cell is an integer palette index):
-- The first 10 palette entries MUST be in exactly this order: skin_tone, \
-hair_color, eye_color, shirt_main, shirt_shadow, arm_main, arm_shadow, \
-pants_main, pants_shadow, shoe_color. Index 10+ are your choice, up to 16 total.
-- head_front: row 0-1 = hair/forehead, row 2-3 = eyes, row 4 = nose, \
-row 5-6 = mouth/chin, row 7 = neck
-- Fill in "face_features" first, based on careful observation of the \
-photo — it guides the pixel choices below but is not itself validated or \
-rendered.
-- Eyes and mouth in head_front MUST use a palette index other than \
-skin_tone (0) and hair_color (1) — reuse eye_color (2) by default. If \
-face_features.eye_shape is "narrow", render each eye 1 pixel wide; if \
-"round", render each eye 2 pixels wide. If face_features.mouth_color is \
-meaningfully different from eye_color, use a freeform slot (10+) for the \
-mouth instead of reusing eye_color. If face_features.eyebrow_color isn't \
-"none", add a row of eyebrow-colored pixels at row 1.
-- body_front, right_arm_front, left_arm_front, right_leg_front, \
-left_leg_front are the front-facing torso/limb pixels visible in most \
-photos — paint them to match the photo's actual clothing and skin as \
-closely as you can (e.g. where a sleeve ends and skin begins)
-- Most characters do NOT need anything beyond the 11 faces above. ONLY if \
-the photo shows a genuinely distinctive design element (a back logo, a \
-sleeve pattern, a belt, a cape) that would look wrong as a flat color, add \
-up to 4 more faces as extra top-level keys using the same [row][col] \
-palette-index format. Valid extra keys: {extra_face_keys}
-- shirt_main, arm_main, and pants_main also color the back/side faces of \
-the torso/arms/legs (derived from the front faces you paint) and any \
-top/bottom cap faces you don't draw yourself; shoe_color fills the sole
-- All palette hex values are exactly 7 chars: "#RRGGBB\""""
+RULES:
+- bbox is [x0, y0, x1, y1], each a fraction from 0 to 1 of the image's \
+width/height, top-left origin, so x1 > x0 and y1 > y0.
+- "head" should tightly bound just the face (forehead to chin), not the \
+whole head/hair.
+- "torso" should bound the visible chest/shirt area.
+- "right_arm"/"left_arm" are the character's own right/left (mirrored from \
+the viewer's perspective) — bound the upper arm/forearm area, not the hand.
+- "right_leg"/"left_leg" similarly bound the visible thigh/shin area.
+- If a region isn't visible in the photo at all (e.g. a headshot has no \
+visible legs), set "visible": false and omit "bbox" for that region — this \
+is expected and normal, not an error.
+- eye_shape: "narrow" if the eyes read as small/narrow in the photo, \
+"round" if they read as large/round.
+- hair_style: pick the closest category based on what's visible."""
 
 
 def _prepare_image(image_bytes: bytes) -> tuple[bytes, str]:
@@ -188,87 +157,57 @@ def decode_indexed_grid(grid: list[list[Any]], palette: list[str]) -> list[list[
     ]
 
 
-def _try_decode_face(
-    data: dict[str, Any],
-    key: str,
-    group: str,
-    face: str,
-    regions: dict[str, dict[str, Any]],
-    palette: list[str],
-) -> tuple[list[list[int]], list[list[str]]] | None:
-    rect = regions[group][face]
-    grid = data.get(key)
-    if not (
-        isinstance(grid, list)
-        and len(grid) == rect.h
-        and all(
-            isinstance(row, list)
-            and len(row) == rect.w
-            and all(isinstance(cell, int) for cell in row)
-            for row in grid
-        )
-    ):
+def _valid_bbox(value: Any) -> Bbox | None:
+    if not (isinstance(value, list) and len(value) == 4):
         return None
-    return grid, decode_indexed_grid(grid, palette)
+    if not all(isinstance(v, (int, float)) for v in value):
+        return None
+    x0, y0, x1, y1 = (float(v) for v in value)
+    if not all(0.0 <= v <= 1.0 for v in (x0, y0, x1, y1)):
+        return None
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
 
 
-def _validate_and_decode(
-    data: dict[str, Any], model: ModelType
-) -> tuple[
-    dict[str, list[list[str]]], dict[str, list[list[int]]], dict[str, str], dict[str, Any], bool
-]:
-    """Validate the model response and decode its indexed pixel grids to hex.
+def _validate_regions_response(
+    data: dict[str, Any],
+) -> tuple[str, str, dict[str, Bbox | None], bool]:
+    """Validate the model's region-localization response.
 
-    Returns (pixel_data_hex, raw_index_grids, named_colors, metadata, is_complete).
+    A malformed individual region degrades to "not visible" rather than
+    failing the whole response; only a missing/invalid hair_style,
+    eye_shape, or a structurally-malformed `regions` dict fails it.
+
+    Returns (hair_style, eye_shape, {region_key: bbox_or_None}, is_complete).
     """
-    regions = get_all_regions(model)
-    palette = data.get("palette")
-    has_valid_palette = (
-        isinstance(palette, list)
-        and MIN_PALETTE_SIZE <= len(palette) <= MAX_PALETTE_SIZE
-        and all(_is_valid_hex(c) for c in palette)
+    hair_style = data.get("hair_style")
+    eye_shape = data.get("eye_shape")
+    regions_raw = data.get("regions")
+
+    structurally_ok = (
+        hair_style in HAIR_STYLES
+        and eye_shape in EYE_SHAPES
+        and isinstance(regions_raw, dict)
+        and set(regions_raw.keys()) == set(REGION_KEYS)
     )
+    if not structurally_ok:
+        return "", "", {key: None for key in REGION_KEYS}, False
 
-    pixel_data: dict[str, list[list[str]]] = {}
-    raw_grids: dict[str, list[list[int]]] = {}
+    regions: dict[str, Bbox | None] = {}
+    for key in REGION_KEYS:
+        entry = regions_raw[key]
+        if isinstance(entry, dict) and entry.get("visible") is True:
+            regions[key] = _valid_bbox(entry.get("bbox"))
+        else:
+            regions[key] = None
 
-    if has_valid_palette:
-        for key in AI_GENERATED_KEYS:
-            group, face = PIXEL_KEY_MAP[key]
-            decoded = _try_decode_face(data, key, group, face, regions, palette)
-            if decoded is None:
-                logger.warning("Invalid/missing grid for %s", key)
-                continue
-            raw_grids[key], pixel_data[key] = decoded
-
-        for key, (group, face) in PIXEL_KEY_MAP.items():
-            if key in AI_GENERATED_KEYS or group not in BASE_GROUPS:
-                continue
-            decoded = _try_decode_face(data, key, group, face, regions, palette)
-            if decoded is not None:
-                raw_grids[key], pixel_data[key] = decoded
-
-    colors = (
-        {name: palette[idx] for name, idx in PALETTE_ROLES.items()} if has_valid_palette else {}
-    )
-
-    mandatory_ok = all(key in pixel_data for key in AI_GENERATED_KEYS)
-
-    metadata = {
-        "description": data.get("description", ""),
-        "skin_tone": colors.get("skin_tone", ""),
-        "hair_color": colors.get("hair_color", ""),
-        "regions_generated": len(pixel_data),
-    }
-
-    is_complete = has_valid_palette and mandatory_ok
-    return pixel_data, raw_grids, colors, metadata, is_complete
+    return hair_style, eye_shape, regions, True
 
 
 async def _call_vision(
     image_bytes: bytes,
     media_type: str,
-    model: ModelType,
     style_notes: str,
     ai_model: AIModel,
 ) -> dict[str, Any]:
@@ -280,7 +219,7 @@ async def _call_vision(
             "type": "image_url",
             "image_url": {"url": f"data:{media_type};base64,{image_b64}"},
         },
-        {"type": "text", "text": _build_prompt(model)},
+        {"type": "text", "text": _build_prompt()},
     ]
     if style_notes:
         user_content.append(
@@ -289,8 +228,8 @@ async def _call_vision(
 
     response = await client.chat.completions.create(
         model=_resolve_model_name(ai_model),
-        max_tokens=5000,
-        temperature=0.3,
+        max_tokens=800,
+        temperature=0.2,
         # Gemini 2.5 defaults to "thinking" mode, which eats into max_tokens
         # before any visible output — without this the response gets cut off.
         reasoning_effort="none",
@@ -298,6 +237,115 @@ async def _call_vision(
     )
     text = response.choices[0].message.content or ""
     return _extract_json(text)
+
+
+def _render_photo(
+    photo: Image.Image,
+    regions: dict[str, Bbox | None],
+    hair_style: str,
+    eye_shape: str,
+    model: ModelType,
+) -> tuple[dict[str, list[list[str]]], dict[str, list[list[int]]], list[str], dict[str, str]]:
+    """Build pixel_data/raw index grids/palette/named-colors from a located photo.
+
+    Returns (pixel_data_hex, raw_index_grids, palette, named_colors) where
+    named_colors has whichever of shirt_main/arm_main/pants_main/
+    head_fill_color could be derived from a visible region (missing keys
+    fall back to generate_procedural_regions's own defaults).
+    """
+    face_regions = get_all_regions(model)
+    rgb_grids: dict[str, list[list[tuple[int, int, int]]]] = {}
+    shapes: dict[str, tuple[int, int]] = {}
+
+    for region_key, part, front_key in _PHOTO_PARTS:
+        bbox = regions[region_key]
+        if bbox is None:
+            continue
+        crop = crop_region(photo, bbox)
+        if crop is None:
+            continue
+        rect = face_regions[part]["front"]
+        rgb_grids[front_key] = downsample_dominant(crop, rect.h, rect.w)
+        shapes[front_key] = (rect.h, rect.w)
+
+    shared_palette, shared_indices = quantize_shared(rgb_grids)
+
+    named_colors: dict[str, str] = {}
+    pixel_data: dict[str, list[list[str]]] = {}
+    raw_grids: dict[str, list[list[int]]] = {}
+    color_key_by_front = {
+        "body_front": "shirt_main",
+        "right_arm_front": "arm_main",
+        "left_arm_front": "arm_main",
+        "right_leg_front": "pants_main",
+        "left_leg_front": "pants_main",
+    }
+    for front_key, index_grid in shared_indices.items():
+        pixel_data[front_key] = decode_indexed_grid(index_grid, shared_palette)
+        raw_grids[front_key] = index_grid
+        color_key = color_key_by_front[front_key]
+        if color_key not in named_colors:
+            named_colors[color_key] = dominant_hex(pixel_data[front_key])
+
+    # A region the model marked not-visible (or whose crop degenerated to
+    # zero size) still needs a raw index grid and hex grid of its own —
+    # persist_state["pixel_grids"] must always cover all 6 mandatory front
+    # faces so a future palette-based edit feature has something to retint
+    # for every base region, not just the ones visible in this particular
+    # photo. Falls back to the same named color a sibling limb already
+    # supplied, or otherwise the same default generate_procedural_regions
+    # would have used, so the flat fill this produces is visually identical
+    # to what procedural fill would have produced anyway.
+    for region_key, part, front_key in _PHOTO_PARTS:
+        if front_key in pixel_data:
+            continue
+        rect = face_regions[part]["front"]
+        color_key = color_key_by_front[front_key]
+        hexval = named_colors.get(color_key, _FRONT_FALLBACK_COLOR[front_key])
+        if hexval in shared_palette:
+            idx = shared_palette.index(hexval)
+        else:
+            idx = len(shared_palette)
+            shared_palette.append(hexval)
+        raw_grids[front_key] = [[idx] * rect.w for _ in range(rect.h)]
+        pixel_data[front_key] = [[hexval] * rect.w for _ in range(rect.h)]
+        if color_key not in named_colors:
+            named_colors[color_key] = hexval
+
+    head_bbox = regions["head"]
+    head_crop = crop_region(photo, head_bbox) if head_bbox is not None else None
+    if head_crop is not None:
+        face_colors = extract_face_colors(head_crop)
+    else:
+        face_colors = {
+            "skin_tone": "#C4A882",
+            "hair_color": "#5B3A1A",
+            "eye_color": "#3B5998",
+            "mouth_color": "#AA5555",
+        }
+
+    named_colors["skin_tone"] = face_colors["skin_tone"]
+    named_colors["hair_color"] = face_colors["hair_color"]
+    named_colors["head_fill_color"] = (
+        face_colors["skin_tone"] if hair_style == "bald" else face_colors["hair_color"]
+    )
+
+    head_hex_grid = build_head_front(face_colors, eye_shape)
+    head_local_palette = [
+        face_colors["skin_tone"],
+        face_colors["hair_color"],
+        face_colors["eye_color"],
+        face_colors["mouth_color"],
+    ]
+    offset = len(shared_palette)
+    head_index_grid = [
+        [offset + head_local_palette.index(hexval) for hexval in row] for row in head_hex_grid
+    ]
+    pixel_data["head_front"] = head_hex_grid
+    raw_grids["head_front"] = head_index_grid
+
+    full_palette = shared_palette + head_local_palette
+    return pixel_data, raw_grids, full_palette, named_colors
 
 
 async def generate_skin_data(
@@ -308,186 +356,53 @@ async def generate_skin_data(
     ai_model: AIModel = "flash",
     max_retries: int = 2,
 ) -> tuple[dict[str, list[list[str]]], dict[str, Any], dict[str, Any]]:
-    """Full pipeline: photo → one Vision call → AI pixels + procedural fill.
+    """Full pipeline: photo → one Vision call (region localization) → photo_render pixels.
 
     Returns:
         (pixel_data covering all base regions, metadata, persist_state).
         `persist_state` is ready to pass to skin_store.save_skin_state(skin_id, **persist_state).
     """
     prepped_bytes, prepped_media_type = _prepare_image(image_bytes)
+    photo = Image.open(io.BytesIO(prepped_bytes)).convert("RGB")
 
-    pixel_data: dict[str, list[list[str]]] = {}
-    raw_grids: dict[str, list[list[int]]] = {}
-    colors: dict[str, str] = {}
-    metadata: dict[str, Any] = {
-        "description": "",
-        "skin_tone": "",
-        "hair_color": "",
-        "regions_generated": 0,
-    }
+    hair_style, eye_shape, regions, is_complete = "", "", {}, False
     raw: dict[str, Any] = {}
-
     for attempt in range(max_retries + 1):
-        raw = await _call_vision(prepped_bytes, prepped_media_type, model, style_notes, ai_model)
-        pixel_data, raw_grids, colors, metadata, is_complete = _validate_and_decode(raw, model)
+        raw = await _call_vision(prepped_bytes, prepped_media_type, style_notes, ai_model)
+        hair_style, eye_shape, regions, is_complete = _validate_regions_response(raw)
         if is_complete:
             break
-        logger.warning(
-            "Attempt %d: %d/%d mandatory AI regions decoded",
-            attempt + 1,
-            sum(1 for k in AI_GENERATED_KEYS if k in pixel_data),
-            len(AI_GENERATED_KEYS),
-        )
+        logger.warning("Attempt %d: region-localization response incomplete", attempt + 1)
 
-    logger.info("Analysis complete: %s", metadata.get("description", ""))
+    if not is_complete:
+        hair_style, eye_shape = "short", "round"
+        regions = {key: None for key in REGION_KEYS}
+
+    pixel_data, raw_grids, palette, named_colors = _render_photo(
+        photo, regions, hair_style, eye_shape, model
+    )
 
     pixel_data.update(
         generate_procedural_regions(
-            pixel_data, colors, model, exclude_keys=frozenset(pixel_data.keys())
+            pixel_data, named_colors, model, exclude_keys=frozenset(pixel_data.keys())
         )
     )
-    metadata["ai_model"] = ai_model
 
-    palette = raw.get("palette") if isinstance(raw.get("palette"), list) else []
+    metadata = {
+        "description": "",
+        "skin_tone": named_colors["skin_tone"],
+        "hair_color": named_colors["hair_color"],
+        "regions_generated": len(AI_GENERATED_KEYS),
+        "ai_model": ai_model,
+    }
+
     persist_state = {
         "model": model,
         "ai_model": ai_model,
         "palette": palette,
         "pixel_grids": raw_grids,
-        "description": metadata.get("description", ""),
-        "hair_style": raw.get("hair_style", "") if isinstance(raw.get("hair_style"), str) else "",
-    }
-
-    return pixel_data, metadata, persist_state
-
-
-EDIT_MAX_TOKENS = 300
-
-
-async def interpret_color_edit(
-    current_roles: dict[str, str], instruction: str, ai_model: AIModel
-) -> dict[str, str]:
-    """Text-only call: map a free-text instruction to changed named color roles.
-
-    Returns a dict of role name -> new hex value, containing only the roles
-    that should change. Returns {} if nothing recognized or parsing fails.
-    """
-    client = _get_client()
-    roles_json = json.dumps(current_roles, indent=2)
-    prompt = f"""You are editing the colors of an existing Minecraft skin design.
-
-Current named colors:
-{roles_json}
-
-User's instruction: "{instruction}"
-
-Output ONLY a JSON object containing the roles that should change and their \
-new color as "#RRGGBB". Only use these exact role names: \
-{", ".join(current_roles.keys())}. If the instruction doesn't clearly map to \
-any of these roles, output {{}}."""
-
-    response = await client.chat.completions.create(
-        model=_resolve_model_name(ai_model),
-        max_tokens=EDIT_MAX_TOKENS,
-        temperature=0.2,
-        reasoning_effort="none",
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = response.choices[0].message.content or ""
-    try:
-        changes = _extract_json(text)
-    except (json.JSONDecodeError, ValueError):
-        return {}
-    if not isinstance(changes, dict):
-        return {}
-    return {
-        role: value
-        for role, value in changes.items()
-        if role in current_roles and _is_valid_hex(value)
-    }
-
-
-async def apply_color_edit(
-    state: dict[str, Any], instruction: str
-) -> tuple[dict[str, list[list[str]]], dict[str, Any], dict[str, Any]]:
-    """Apply a conversational color edit to a persisted skin state.
-
-    Returns (pixel_data, metadata, persist_state) — same shapes as
-    generate_skin_data, ready to reassemble the PNG and re-save the state.
-    """
-    model: ModelType = state["model"]
-    ai_model: AIModel = state["ai_model"]
-    palette = list(state["palette"])
-
-    if len(palette) < MIN_PALETTE_SIZE:
-        # Persisted state from an incomplete generation (retries exhausted but
-        # still saved) can have a palette shorter than the fixed-role slots
-        # expect. Don't crash — just leave the skin as-is.
-        logger.warning(
-            "Persisted palette has only %d entries (need >= %d); skipping color edit",
-            len(palette),
-            MIN_PALETTE_SIZE,
-        )
-        pixel_data = {
-            key: decode_indexed_grid(grid, palette) for key, grid in state["pixel_grids"].items()
-        }
-        colors = {
-            name: palette[idx] for name, idx in PALETTE_ROLES.items() if idx < len(palette)
-        }
-        pixel_data.update(
-            generate_procedural_regions(
-                pixel_data, colors, model, exclude_keys=frozenset(pixel_data.keys())
-            )
-        )
-        metadata = {
-            "description": state.get("description", ""),
-            "skin_tone": colors.get("skin_tone", ""),
-            "hair_color": colors.get("hair_color", ""),
-            "regions_generated": len(pixel_data),
-            "ai_model": ai_model,
-            "changed_roles": [],
-        }
-        persist_state = {
-            "model": model,
-            "ai_model": ai_model,
-            "palette": palette,
-            "pixel_grids": state["pixel_grids"],
-            "description": state.get("description", ""),
-            "hair_style": state.get("hair_style", ""),
-        }
-        return pixel_data, metadata, persist_state
-
-    current_roles = {name: palette[idx] for name, idx in PALETTE_ROLES.items()}
-    changes = await interpret_color_edit(current_roles, instruction, ai_model)
-    for role, hex_value in changes.items():
-        palette[PALETTE_ROLES[role]] = hex_value
-
-    pixel_data: dict[str, list[list[str]]] = {
-        key: decode_indexed_grid(grid, palette) for key, grid in state["pixel_grids"].items()
-    }
-    colors = {name: palette[idx] for name, idx in PALETTE_ROLES.items()}
-    pixel_data.update(
-        generate_procedural_regions(
-            pixel_data, colors, model, exclude_keys=frozenset(pixel_data.keys())
-        )
-    )
-
-    metadata = {
-        "description": state.get("description", ""),
-        "skin_tone": colors["skin_tone"],
-        "hair_color": colors["hair_color"],
-        "regions_generated": len(pixel_data),
-        "ai_model": ai_model,
-        "changed_roles": list(changes.keys()),
-    }
-
-    persist_state = {
-        "model": model,
-        "ai_model": ai_model,
-        "palette": palette,
-        "pixel_grids": state["pixel_grids"],
-        "description": state.get("description", ""),
-        "hair_style": state.get("hair_style", ""),
+        "description": "",
+        "hair_style": hair_style,
     }
 
     return pixel_data, metadata, persist_state
