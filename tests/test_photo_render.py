@@ -4,12 +4,65 @@ from PIL import Image
 
 from app.services.photo_render import (
     build_head_front,
+    consolidate_shadows,
     crop_region,
     dominant_hex,
     downsample_dominant,
     extract_face_colors,
     quantize_shared,
 )
+
+
+def _distinct(out: dict) -> set:
+    return {c for grid in out.values() for row in grid for c in row}
+
+
+def test_consolidate_shadows_collapses_shaded_materials_to_intrinsic_colors():
+    grids = {
+        "a": [[(220, 60, 60), (150, 40, 40)]],  # lit-red + shadow-red (same hue)
+        "b": [[(60, 60, 220), (40, 40, 150)]],  # lit-blue + shadow-blue
+    }
+    out = consolidate_shadows(grids)
+    distinct = _distinct(out)
+    assert len(distinct) == 2  # one red material, one blue material
+    assert (150, 40, 40) not in distinct  # dark shadow-red collapsed away
+    assert (40, 40, 150) not in distinct  # dark shadow-blue collapsed away
+
+
+def test_consolidate_shadows_keeps_black_gray_white_distinct():
+    # Grayscale-safety: near-grays must NOT collapse across value bands.
+    grids = {"g": [[(20, 20, 20), (128, 128, 128), (235, 235, 235)]]}
+    out = consolidate_shadows(grids)
+    assert len(_distinct(out)) == 3
+
+
+def test_consolidate_shadows_collapses_single_material_gradient_to_one():
+    grids = {"g": [[(r, r // 4, r // 4) for r in range(120, 240, 10)]]}
+    out = consolidate_shadows(grids)
+    assert len(_distinct(out)) == 1
+
+
+def test_consolidate_shadows_representative_is_bright_not_dark():
+    grids = {"g": [[(210, 55, 55), (110, 28, 28)]]}  # bright + dark red
+    out = consolidate_shadows(grids)
+    (rep,) = _distinct(out)
+    # highlight tone: brighter than the dark shadow input's max channel (110)
+    assert max(rep) > 110
+
+
+def test_consolidate_shadows_preserves_grid_shapes():
+    grids = {
+        "a": [[(10, 10, 10)] * 8 for _ in range(12)],
+        "b": [[(200, 50, 50)] * 4 for _ in range(12)],
+    }
+    out = consolidate_shadows(grids)
+    assert len(out["a"]) == 12 and len(out["a"][0]) == 8
+    assert len(out["b"]) == 12 and len(out["b"][0]) == 4
+
+
+def test_consolidate_shadows_empty_is_safe():
+    assert consolidate_shadows({}) == {}
+    assert consolidate_shadows({"a": []}) == {"a": []}
 
 
 def _solid(w: int, h: int, color: tuple[int, int, int]) -> Image.Image:

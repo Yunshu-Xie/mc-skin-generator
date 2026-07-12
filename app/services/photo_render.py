@@ -10,6 +10,7 @@ for the full design.
 
 from __future__ import annotations
 
+import colorsys
 from collections import Counter
 
 from PIL import Image
@@ -17,6 +18,14 @@ from PIL import Image
 Bbox = tuple[float, float, float, float]  # (x0, y0, x1, y1), fractions of image size
 
 _HEAD_BAND_ROWS = 8  # head_front's row template is 8 rows tall
+
+# HSV shadow-consolidation tuning (see the 2026-07-12 design spec). These are
+# a starting point, tuned visually against the real test images.
+SAT_FLOOR = 0.25  # below this saturation a color is treated as near-gray
+HUE_TOL = 0.06  # hue distance (fraction of the 0-1 wheel) to be "same material"
+SAT_TOL = 0.30  # saturation distance to be "same material" (saturated colors)
+GRAY_VALUE_BANDS = 5  # near-grays split into this many value bands
+HIGHLIGHT_PERCENTILE = 80  # representative value = this percentile of a cluster's values
 
 
 def crop_region(image: Image.Image, bbox: Bbox) -> Image.Image | None:
@@ -107,6 +116,99 @@ def quantize_shared(
         out[key] = [flat_indices[pos + row * w : pos + (row + 1) * w] for row in range(h)]
         pos += h * w
     return palette, out
+
+
+def _rgb_to_hsv(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
+    r, g, b = (c / 255 for c in rgb)
+    return colorsys.rgb_to_hsv(r, g, b)
+
+
+def _hue_dist(h1: float, h2: float) -> float:
+    """Circular distance on the 0-1 hue wheel."""
+    d = abs(h1 - h2)
+    return min(d, 1.0 - d)
+
+
+def _percentile(sorted_vals: list[float], pct: float) -> float:
+    if not sorted_vals:
+        return 0.0
+    k = (len(sorted_vals) - 1) * pct / 100.0
+    lo = int(k)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = k - lo
+    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
+
+
+def _same_material(
+    a_hsv: tuple[float, float, float], b_hsv: tuple[float, float, float]
+) -> bool:
+    """Whether two colors are the same material under different lighting.
+
+    Saturated colors: same hue + saturation (value, the shadow axis, ignored).
+    Near-gray colors: hue is meaningless, so cluster by value band instead —
+    this keeps black / gray / white distinct rather than collapsing them.
+    """
+    ha, sa, va = a_hsv
+    hb, sb, vb = b_hsv
+    a_gray = sa < SAT_FLOOR
+    b_gray = sb < SAT_FLOOR
+    if a_gray != b_gray:
+        return False
+    if a_gray:
+        band_a = min(int(va * GRAY_VALUE_BANDS), GRAY_VALUE_BANDS - 1)
+        band_b = min(int(vb * GRAY_VALUE_BANDS), GRAY_VALUE_BANDS - 1)
+        return band_a == band_b
+    return _hue_dist(ha, hb) <= HUE_TOL and abs(sa - sb) <= SAT_TOL
+
+
+def consolidate_shadows(
+    rgb_grids: dict[str, list[list[tuple[int, int, int]]]],
+) -> dict[str, list[list[tuple[int, int, int]]]]:
+    """Collapse shadow variants of one material to a single highlight-tone color.
+
+    Shadow preserves hue+saturation and only lowers value, so colors sharing
+    hue+saturation but differing in value are the same material under different
+    lighting; they merge to one representative at a high value percentile (the
+    brighter/intrinsic tone). Near-gray colors cluster by value band instead
+    (see _same_material). Runs before quantize_shared so the palette carries
+    flat intrinsic colors rather than the photo's baked-in shading — Minecraft
+    re-lights the 3D model itself.
+    """
+    counts: Counter[tuple[int, int, int]] = Counter()
+    for grid in rgb_grids.values():
+        for row in grid:
+            for cell in row:
+                counts[cell] += 1
+    if not counts:
+        return {k: [row[:] for row in grid] for k, grid in rgb_grids.items()}
+
+    hsv = {c: _rgb_to_hsv(c) for c in counts}
+
+    # Greedy clustering: each color joins the first cluster whose seed it matches.
+    clusters: list[list[tuple[int, int, int]]] = []
+    for color in counts:
+        for cluster in clusters:
+            if _same_material(hsv[color], hsv[cluster[0]]):
+                cluster.append(color)
+                break
+        else:
+            clusters.append([color])
+
+    rep: dict[tuple[int, int, int], tuple[int, int, int]] = {}
+    for cluster in clusters:
+        seed = max(cluster, key=lambda c: counts[c])  # most-common member sets hue/sat
+        sh, ss, _sv = hsv[seed]
+        values = sorted(v for c in cluster for v in [hsv[c][2]] * counts[c])
+        rep_v = _percentile(values, HIGHLIGHT_PERCENTILE)
+        rr, rg, rb = colorsys.hsv_to_rgb(sh, ss, rep_v)
+        rep_rgb = (round(rr * 255), round(rg * 255), round(rb * 255))
+        for c in cluster:
+            rep[c] = rep_rgb
+
+    return {
+        key: [[rep[cell] for cell in row] for row in grid]
+        for key, grid in rgb_grids.items()
+    }
 
 
 def _band(face_crop: Image.Image, row_start: int, row_end: int) -> Image.Image:
