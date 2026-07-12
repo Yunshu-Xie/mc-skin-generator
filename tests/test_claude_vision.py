@@ -141,6 +141,8 @@ def test_build_prompt_mentions_all_six_regions_and_categorical_fields():
     assert "mouth_width" in prompt
     assert "bbox" in prompt
     assert "visible" in prompt
+    # head bbox must include hair (the fix for hair sampling) — see design spec
+    assert "hair" in prompt and "WHOLE head" in prompt
 
 
 def _portrait_photo_bytes() -> bytes:

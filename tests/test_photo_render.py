@@ -228,10 +228,10 @@ def test_build_head_front_has_two_symmetric_eyes():
     }
     for shape in ("narrow", "round"):
         grid = build_head_front(colors, eye_shape=shape)
-        left_half = grid[2][0:4]
-        right_half = grid[2][4:8]
-        assert "#141414" in left_half, f"{shape}: no eye in left half"
-        assert "#141414" in right_half, f"{shape}: no eye in right half"
+        assert grid[0] == ["#28140A"] * 8 and grid[1] == ["#28140A"] * 8  # both hair rows
+        for eye_row in (2, 3):  # eyes span rows 2-3
+            assert "#141414" in grid[eye_row][0:4], f"{shape} row{eye_row}: no eye left half"
+            assert "#141414" in grid[eye_row][4:8], f"{shape} row{eye_row}: no eye right half"
 
 
 def test_build_head_front_mouth_is_single_row_not_rectangle():

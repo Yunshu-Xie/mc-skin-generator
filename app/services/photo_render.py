@@ -196,8 +196,8 @@ def consolidate_shadows(
 
     rep: dict[tuple[int, int, int], tuple[int, int, int]] = {}
     for cluster in clusters:
-        seed = max(cluster, key=lambda c: counts[c])  # most-common member sets hue/sat
-        sh, ss, _sv = hsv[seed]
+        anchor = max(cluster, key=lambda c: counts[c])  # most-common member sets hue/sat
+        sh, ss, _sv = hsv[anchor]
         values = sorted(v for c in cluster for v in [hsv[c][2]] * counts[c])
         rep_v = _percentile(values, HIGHLIGHT_PERCENTILE)
         rr, rg, rb = colorsys.hsv_to_rgb(sh, ss, rep_v)
