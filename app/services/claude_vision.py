@@ -28,6 +28,7 @@ from app.config import settings
 from app.services.photo_render import (
     Bbox,
     build_head_front,
+    consolidate_shadows,
     crop_region,
     dominant_hex,
     downsample_dominant,
@@ -44,6 +45,7 @@ AIModel = Literal["flash", "flash-lite"]
 REGION_KEYS = ("head", "torso", "right_arm", "left_arm", "right_leg", "left_leg")
 HAIR_STYLES = ("short", "long", "bald", "hat", "helmet")
 EYE_SHAPES = ("narrow", "round")
+MOUTH_WIDTHS = ("small", "wide")
 
 # Maps a "regions" key to the skin_map part name + the AI_GENERATED_KEYS
 # front face it produces, for every region except "head" (handled
@@ -87,6 +89,7 @@ Output ONLY a JSON object (no markdown, no explanation) with this structure:
 {
   "hair_style": "short|long|bald|hat|helmet",
   "eye_shape": "narrow|round",
+  "mouth_width": "small|wide",
   "regions": {
     "head":      {"visible": true, "bbox": [x0, y0, x1, y1]},
     "torso":     {"visible": true, "bbox": [x0, y0, x1, y1]},
@@ -100,8 +103,8 @@ Output ONLY a JSON object (no markdown, no explanation) with this structure:
 RULES:
 - bbox is [x0, y0, x1, y1], each a fraction from 0 to 1 of the image's \
 width/height, top-left origin, so x1 > x0 and y1 > y0.
-- "head" should tightly bound just the face (forehead to chin), not the \
-whole head/hair.
+- "head" should bound the WHOLE head including hair — from the very top of \
+the hair down to the chin (the top ~1/4 of this box should be hair).
 - "torso" should bound the visible chest/shirt area.
 - "right_arm"/"left_arm" are the character's own right/left (mirrored from \
 the viewer's perspective) — bound the upper arm/forearm area, not the hand.
@@ -111,6 +114,8 @@ visible legs), set "visible": false and omit "bbox" for that region — this \
 is expected and normal, not an error.
 - eye_shape: "narrow" if the eyes read as small/narrow in the photo, \
 "round" if they read as large/round.
+- mouth_width: "small" if the mouth is small/closed, "wide" if it is broad \
+or open (e.g. a wide smile).
 - hair_style: pick the closest category based on what's visible."""
 
 
@@ -172,17 +177,22 @@ def _valid_bbox(value: Any) -> Bbox | None:
 
 def _validate_regions_response(
     data: dict[str, Any],
-) -> tuple[str, str, dict[str, Bbox | None], bool]:
+) -> tuple[str, str, str, dict[str, Bbox | None], bool]:
     """Validate the model's region-localization response.
 
     A malformed individual region degrades to "not visible" rather than
     failing the whole response; only a missing/invalid hair_style,
     eye_shape, or a structurally-malformed `regions` dict fails it.
+    `mouth_width` is advisory — it never fails validation, defaulting to
+    "small" when absent or invalid.
 
-    Returns (hair_style, eye_shape, {region_key: bbox_or_None}, is_complete).
+    Returns (hair_style, eye_shape, mouth_width, {region_key: bbox_or_None},
+    is_complete).
     """
     hair_style = data.get("hair_style")
     eye_shape = data.get("eye_shape")
+    mouth_width = data.get("mouth_width")
+    mouth_width = mouth_width if mouth_width in MOUTH_WIDTHS else "small"
     regions_raw = data.get("regions")
 
     structurally_ok = (
@@ -192,7 +202,7 @@ def _validate_regions_response(
         and set(regions_raw.keys()) == set(REGION_KEYS)
     )
     if not structurally_ok:
-        return "", "", {key: None for key in REGION_KEYS}, False
+        return "", "", "small", {key: None for key in REGION_KEYS}, False
 
     regions: dict[str, Bbox | None] = {}
     for key in REGION_KEYS:
@@ -202,7 +212,7 @@ def _validate_regions_response(
         else:
             regions[key] = None
 
-    return hair_style, eye_shape, regions, True
+    return hair_style, eye_shape, mouth_width, regions, True
 
 
 async def _call_vision(
@@ -244,6 +254,7 @@ def _render_photo(
     regions: dict[str, Bbox | None],
     hair_style: str,
     eye_shape: str,
+    mouth_width: str,
     model: ModelType,
 ) -> tuple[dict[str, list[list[str]]], dict[str, list[list[int]]], list[str], dict[str, str]]:
     """Build pixel_data/raw index grids/palette/named-colors from a located photo.
@@ -268,6 +279,9 @@ def _render_photo(
         rgb_grids[front_key] = downsample_dominant(crop, rect.h, rect.w)
         shapes[front_key] = (rect.h, rect.w)
 
+    # Remove the photo's baked-in shading so each material reads as one flat
+    # intrinsic color (Minecraft re-lights the model). Then quantize.
+    rgb_grids = consolidate_shadows(rgb_grids)
     shared_palette, shared_indices = quantize_shared(rgb_grids)
 
     named_colors: dict[str, str] = {}
@@ -330,7 +344,7 @@ def _render_photo(
         face_colors["skin_tone"] if hair_style == "bald" else face_colors["hair_color"]
     )
 
-    head_hex_grid = build_head_front(face_colors, eye_shape)
+    head_hex_grid = build_head_front(face_colors, eye_shape, mouth_width)
     head_local_palette = [
         face_colors["skin_tone"],
         face_colors["hair_color"],
@@ -365,21 +379,21 @@ async def generate_skin_data(
     prepped_bytes, prepped_media_type = _prepare_image(image_bytes)
     photo = Image.open(io.BytesIO(prepped_bytes)).convert("RGB")
 
-    hair_style, eye_shape, regions, is_complete = "", "", {}, False
+    hair_style, eye_shape, mouth_width, regions, is_complete = "", "", "small", {}, False
     raw: dict[str, Any] = {}
     for attempt in range(max_retries + 1):
         raw = await _call_vision(prepped_bytes, prepped_media_type, style_notes, ai_model)
-        hair_style, eye_shape, regions, is_complete = _validate_regions_response(raw)
+        hair_style, eye_shape, mouth_width, regions, is_complete = _validate_regions_response(raw)
         if is_complete:
             break
         logger.warning("Attempt %d: region-localization response incomplete", attempt + 1)
 
     if not is_complete:
-        hair_style, eye_shape = "short", "round"
+        hair_style, eye_shape, mouth_width = "short", "round", "small"
         regions = {key: None for key in REGION_KEYS}
 
     pixel_data, raw_grids, palette, named_colors = _render_photo(
-        photo, regions, hair_style, eye_shape, model
+        photo, regions, hair_style, eye_shape, mouth_width, model
     )
 
     pixel_data.update(

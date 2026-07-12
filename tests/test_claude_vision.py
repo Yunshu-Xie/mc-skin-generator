@@ -27,6 +27,7 @@ def _valid_regions_response(**overrides) -> dict:
     data = {
         "hair_style": "short",
         "eye_shape": "round",
+        "mouth_width": "wide",
         "regions": {
             "head": {"visible": True, "bbox": [0.30, 0.05, 0.68, 0.35]},
             "torso": {"visible": True, "bbox": [0.20, 0.30, 0.75, 0.70]},
@@ -41,10 +42,13 @@ def _valid_regions_response(**overrides) -> dict:
 
 
 def test_validate_regions_response_complete():
-    hair_style, eye_shape, regions, ok = _validate_regions_response(_valid_regions_response())
+    hair_style, eye_shape, mouth_width, regions, ok = _validate_regions_response(
+        _valid_regions_response()
+    )
     assert ok is True
     assert hair_style == "short"
     assert eye_shape == "round"
+    assert mouth_width == "wide"
     assert regions["head"] == (0.30, 0.05, 0.68, 0.35)
     assert regions["right_leg"] is None
     assert regions["left_leg"] is None
@@ -53,34 +57,34 @@ def test_validate_regions_response_complete():
 def test_validate_regions_response_missing_hair_style_is_incomplete():
     data = _valid_regions_response()
     del data["hair_style"]
-    _hs, _es, _regions, ok = _validate_regions_response(data)
+    _hs, _es, _mw, _regions, ok = _validate_regions_response(data)
     assert ok is False
 
 
 def test_validate_regions_response_invalid_eye_shape_is_incomplete():
     data = _valid_regions_response(eye_shape="squinty")
-    _hs, _es, _regions, ok = _validate_regions_response(data)
+    _hs, _es, _mw, _regions, ok = _validate_regions_response(data)
     assert ok is False
 
 
 def test_validate_regions_response_missing_regions_key_is_incomplete():
     data = _valid_regions_response()
     del data["regions"]
-    _hs, _es, _regions, ok = _validate_regions_response(data)
+    _hs, _es, _mw, _regions, ok = _validate_regions_response(data)
     assert ok is False
 
 
 def test_validate_regions_response_missing_one_region_entry_is_incomplete():
     data = _valid_regions_response()
     del data["regions"]["left_leg"]
-    _hs, _es, _regions, ok = _validate_regions_response(data)
+    _hs, _es, _mw, _regions, ok = _validate_regions_response(data)
     assert ok is False  # regions dict must have all 6 keys to be structurally valid
 
 
 def test_validate_regions_response_malformed_single_bbox_degrades_to_not_visible():
     data = _valid_regions_response()
     data["regions"]["torso"] = {"visible": True, "bbox": [0.9, 0.5, 0.1, 0.9]}  # x1 < x0
-    _hs, _es, regions, ok = _validate_regions_response(data)
+    _hs, _es, _mw, regions, ok = _validate_regions_response(data)
     assert ok is True  # whole response still valid
     assert regions["torso"] is None  # this one region degrades gracefully
 
@@ -88,9 +92,21 @@ def test_validate_regions_response_malformed_single_bbox_degrades_to_not_visible
 def test_validate_regions_response_out_of_range_bbox_degrades_to_not_visible():
     data = _valid_regions_response()
     data["regions"]["right_arm"] = {"visible": True, "bbox": [0.1, 0.1, 1.5, 0.5]}
-    _hs, _es, regions, ok = _validate_regions_response(data)
+    _hs, _es, _mw, regions, ok = _validate_regions_response(data)
     assert ok is True
     assert regions["right_arm"] is None
+
+
+def test_validate_regions_response_mouth_width_defaults_when_absent_or_invalid():
+    missing = _valid_regions_response()
+    del missing["mouth_width"]
+    _hs, _es, mw_missing, _r, _ok = _validate_regions_response(missing)
+    assert mw_missing == "small"
+
+    invalid = _valid_regions_response(mouth_width="huge")
+    _hs, _es, mw_invalid, _r, ok = _validate_regions_response(invalid)
+    assert ok is True  # advisory field never fails the response
+    assert mw_invalid == "small"
 
 
 def test_prepare_image_downscales_large_image():
@@ -122,6 +138,7 @@ def test_build_prompt_mentions_all_six_regions_and_categorical_fields():
         assert key in prompt
     assert "hair_style" in prompt
     assert "eye_shape" in prompt
+    assert "mouth_width" in prompt
     assert "bbox" in prompt
     assert "visible" in prompt
 
