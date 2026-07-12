@@ -114,9 +114,9 @@ function showViewer(skinId, skinUrl, model, metadata) {
     currentSkinId = skinId;
     currentSkinUrl = skinUrl;
 
-    if (metadata && metadata.description) {
+    if (metadata && metadata.ai_model) {
         const modelLabel = metadata.ai_model === "flash-lite" ? "Flash-Lite" : "Flash";
-        skinDescription.textContent = `[${modelLabel}] ${metadata.description}`;
+        skinDescription.textContent = `Generated with Gemini ${modelLabel}`;
     }
 
     if (viewer) {

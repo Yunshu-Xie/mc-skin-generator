@@ -1,9 +1,15 @@
-"""Persistence for per-skin generation state, used by conversational color edits.
+"""Persistence for per-skin generation state.
 
-Generation only paints 7-11 faces pixel-by-pixel (see procedural.py for
-why); the raw palette-index grids and full palette are saved next to the
-PNG so a later edit can re-decode with a changed palette without a new
-Vision call.
+Only the 6 photo-derived front faces (head + torso + 4 limbs, see
+photo_render.py / procedural.py for why the rest is deterministic
+fill) have raw index grids; those grids and the full palette are saved
+next to the PNG. This was originally the data backing a conversational
+color-edit feature, which has since been retired (it depended on the
+fixed-role palette that no longer exists). Nothing in production
+currently calls `load_skin_state` — the persistence is kept as-is
+because it's still exactly the data a possible future edit redesign
+would need, and `save_skin_state` costs little to keep calling on
+every generation.
 """
 
 from __future__ import annotations
