@@ -237,15 +237,33 @@ def _minority_color(band: Image.Image, fallback: str) -> str:
     return "#{:02X}{:02X}{:02X}".format(r, g, b)
 
 
+def _dominant_quantized(band: Image.Image, n_colors: int = 5) -> str:
+    """Most common color of `band` after quantizing to n_colors, as hex.
+
+    More robust than the single most-common exact pixel for textured photo
+    regions: a textured material (e.g. hair) spreads across many near-identical
+    exact values, which lets a flat background of ONE exact value win the raw
+    histogram even when it covers less area. Quantizing first collapses the
+    material into one bucket that then correctly dominates.
+    """
+    rgb = band.convert("RGB")
+    quantized = rgb.quantize(colors=n_colors, method=Image.Quantize.MEDIANCUT)
+    idx = Counter(quantized.getdata()).most_common(1)[0][0]
+    r, g, b = quantized.getpalette()[idx * 3 : idx * 3 + 3]
+    return "#{:02X}{:02X}{:02X}".format(r, g, b)
+
+
 def extract_face_colors(face_crop: Image.Image) -> dict[str, str]:
     """Measure skin/hair/eye/mouth colors from a cropped face region.
 
     Uses head_front's existing row template (rows 0-1 hair, row 4 skin,
     rows 2-3 eyes, rows 5-6 mouth, out of 8 total rows) to sample real
-    photo pixels, rather than asking the model to guess hex values.
+    photo pixels, rather than asking the model to guess hex values. Hair and
+    skin use a quantized dominant (robust to texture + background bleed);
+    eyes/mouth use the minority cluster of a 2-color split of their band.
     """
-    skin_tone = "#{:02X}{:02X}{:02X}".format(*_dominant_color(_band(face_crop, 4, 5)))
-    hair_color = "#{:02X}{:02X}{:02X}".format(*_dominant_color(_band(face_crop, 0, 2)))
+    skin_tone = _dominant_quantized(_band(face_crop, 4, 5))
+    hair_color = _dominant_quantized(_band(face_crop, 0, 2))
     eye_color = _minority_color(_band(face_crop, 2, 4), fallback=skin_tone)
     mouth_color = _minority_color(_band(face_crop, 5, 7), fallback=skin_tone)
 

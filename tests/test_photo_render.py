@@ -162,6 +162,27 @@ def test_extract_face_colors_measures_all_four_bands():
     assert colors["mouth_color"] == "#B43C3C"
 
 
+def test_extract_face_colors_hair_beats_flat_background_texture():
+    """A textured hair region (many near values) plus a flat background strip
+    (one exact value) must extract the hair color, not the background — the raw
+    most-common-exact-pixel bug that made blonde hair render near-white."""
+    import random
+
+    img = Image.new("RGB", (80, 80), (210, 170, 120))  # skin base
+    rng = random.Random(0)
+    for y in range(0, 20):  # hair band (rows 0-1)
+        for x in range(80):
+            if x < 12:  # flat near-white background strip (minority area, one exact color)
+                img.putpixel((x, y), (245, 247, 249))
+            else:  # textured golden hair (many near values)
+                d = rng.randint(-6, 6)
+                img.putpixel((x, y), (220 + d, 150 + d, 60 + d))
+
+    hair = extract_face_colors(img)["hair_color"]
+    r, b = int(hair[1:3], 16), int(hair[5:7], 16)
+    assert r > b + 30, f"hair {hair} read as neutral/background, not warm golden"
+
+
 def test_dominant_hex_returns_most_common_color():
     grid = [["#111111", "#111111", "#222222"], ["#111111", "#333333", "#111111"]]
     assert dominant_hex(grid) == "#111111"
