@@ -161,12 +161,18 @@ def dominant_hex(grid: list[list[str]]) -> str:
     return counts.most_common(1)[0][0]
 
 
-def build_head_front(colors: dict[str, str], eye_shape: str) -> list[list[str]]:
+def build_head_front(
+    colors: dict[str, str], eye_shape: str, mouth_width: str = "small"
+) -> list[list[str]]:
     """Build the 8x8 head_front hex grid from measured colors + the fixed template.
 
-    Layout: row 0-1 hair/forehead, row 2-3 eyes, row 4 nose, row 5-6
-    mouth/chin, row 7 neck. Eyes are 1px wide (centered at column 3) if
-    eye_shape == "narrow", 2px wide (columns 3-4) if "round".
+    Layout (columns 0-7):
+      rows 0-1  hair
+      rows 2-3  two symmetric eyes  (narrow: 1px each at cols 2 & 5;
+                                     round: 2px each at cols 1-2 & 5-6)
+      row  4    nose/cheek (skin)
+      row  5    mouth, 1px tall, centered (small: cols 3-4; wide: cols 2-5)
+      rows 6-7  chin/neck (skin)
     """
     skin = colors["skin_tone"]
     hair = colors["hair_color"]
@@ -177,13 +183,18 @@ def build_head_front(colors: dict[str, str], eye_shape: str) -> list[list[str]]:
     grid[0] = [hair] * 8
     grid[1] = [hair] * 8
 
-    eye_cols = (3, 4) if eye_shape == "round" else (3,)
+    # Two symmetric eyes (about the vertical centerline, col 3.5).
+    if eye_shape == "round":
+        eye_cols = (1, 2, 5, 6)
+    else:  # narrow
+        eye_cols = (2, 5)
     for row in (2, 3):
         for col in eye_cols:
             grid[row][col] = eye
 
-    for row in (5, 6):
-        for col in (2, 3, 4, 5):
-            grid[row][col] = mouth
+    # Centered mouth on row 5 only — a horizontal segment, not a block.
+    mouth_cols = (2, 3, 4, 5) if mouth_width == "wide" else (3, 4)
+    for col in mouth_cols:
+        grid[5][col] = mouth
 
     return grid

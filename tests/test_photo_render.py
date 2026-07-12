@@ -143,3 +143,44 @@ def test_build_head_front_eye_width_depends_on_eye_shape():
     narrow_eye_count = sum(cell == "#141414" for row in narrow[2:4] for cell in row)
     round_eye_count = sum(cell == "#141414" for row in round_[2:4] for cell in row)
     assert round_eye_count > narrow_eye_count
+
+
+def test_build_head_front_has_two_symmetric_eyes():
+    colors = {
+        "skin_tone": "#C8A078",
+        "hair_color": "#28140A",
+        "eye_color": "#141414",
+        "mouth_color": "#B43C3C",
+    }
+    for shape in ("narrow", "round"):
+        grid = build_head_front(colors, eye_shape=shape)
+        left_half = grid[2][0:4]
+        right_half = grid[2][4:8]
+        assert "#141414" in left_half, f"{shape}: no eye in left half"
+        assert "#141414" in right_half, f"{shape}: no eye in right half"
+
+
+def test_build_head_front_mouth_is_single_row_not_rectangle():
+    colors = {
+        "skin_tone": "#C8A078",
+        "hair_color": "#28140A",
+        "eye_color": "#141414",
+        "mouth_color": "#B43C3C",
+    }
+    grid = build_head_front(colors, eye_shape="narrow", mouth_width="small")
+    assert "#B43C3C" in grid[5]  # mouth on row 5
+    assert "#B43C3C" not in grid[6]  # not a 2-row rectangle
+    assert grid[6] == ["#C8A078"] * 8  # row 6 is skin/chin
+
+
+def test_build_head_front_mouth_width():
+    colors = {
+        "skin_tone": "#C8A078",
+        "hair_color": "#28140A",
+        "eye_color": "#141414",
+        "mouth_color": "#B43C3C",
+    }
+    small = build_head_front(colors, eye_shape="narrow", mouth_width="small")
+    wide = build_head_front(colors, eye_shape="narrow", mouth_width="wide")
+    assert sum(c == "#B43C3C" for c in small[5]) == 2
+    assert sum(c == "#B43C3C" for c in wide[5]) == 4
