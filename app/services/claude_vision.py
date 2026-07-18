@@ -1,264 +1,365 @@
-"""CodeBuddy AI pipeline: image analysis → pixel grid generation.
+"""Gemini AI pipeline: single Vision call → region bounding boxes + a
+couple of categorical fields, then deterministic Pillow rendering (see
+app.services.photo_render) produces the actual pixels.
 
-Uses OpenAI-compatible API via Tencent CodeBuddy (Coding Plan).
+Uses the Gemini API's OpenAI-compatible endpoint. Callers pick between
+gemini-2.5-flash and gemini-2.5-flash-lite per request via `ai_model`.
+
+The model is asked only to locate 6 body-part regions (head, torso,
+right/left arm, right/left leg) as bounding boxes, plus classify
+hair_style and eye_shape — a much smaller, more reliable ask than
+directly authoring per-pixel palette indices. See
+docs/superpowers/specs/2026-07-10-photo-derived-pixel-rendering-design.md
+for the full design and rationale.
 """
 
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
-import httpx
-import httpx
 from openai import AsyncOpenAI
+from PIL import Image
 
 from app.config import settings
+from app.services.photo_render import (
+    Bbox,
+    build_head_front,
+    consolidate_shadows,
+    crop_region,
+    dominant_hex,
+    downsample_dominant,
+    extract_face_colors,
+    quantize_shared,
+)
+from app.services.procedural import AI_GENERATED_KEYS, generate_procedural_regions
 from app.services.skin_map import ModelType, get_all_regions
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_PROMPT = """\
-You are a Minecraft skin designer. Analyze this image and design a Minecraft skin \
-based on the character/person's appearance.
+AIModel = Literal["flash", "flash-lite"]
 
-Output ONLY a JSON object (no markdown, no explanation) with this structure:
-{
-  "description": "Brief description of what you see",
-  "skin_tone": "#HEX",
-  "hair_color": "#HEX",
-  "hair_style": "short|long|bald|hat|helmet",
-  "eye_color": "#HEX",
-  "head": {
-    "front": {"description": "...", "palette": {"skin": "#HEX", "hair": "#HEX", "eyes": "#HEX", "mouth": "#HEX"}},
-    "back": {"description": "...", "palette": {"main": "#HEX"}},
-    "top": {"description": "...", "palette": {"main": "#HEX"}},
-    "bottom": {"description": "...", "palette": {"main": "#HEX"}},
-    "left": {"description": "...", "palette": {"skin": "#HEX", "hair": "#HEX"}},
-    "right": {"description": "...", "palette": {"skin": "#HEX", "hair": "#HEX"}}
-  },
-  "body": {
-    "front": {"description": "...", "palette": {"main": "#HEX", "accent": "#HEX", "shadow": "#HEX"}},
-    "back": {"description": "...", "palette": {"main": "#HEX"}},
-    "top": {"description": "...", "palette": {"main": "#HEX"}},
-    "bottom": {"description": "...", "palette": {"main": "#HEX"}},
-    "left": {"description": "...", "palette": {"main": "#HEX", "shadow": "#HEX"}},
-    "right": {"description": "...", "palette": {"main": "#HEX", "shadow": "#HEX"}}
-  },
-  "right_arm": {
-    "front": {"description": "...", "palette": {"main": "#HEX"}},
-    "back": {"description": "...", "palette": {"main": "#HEX"}},
-    "top": {"description": "...", "palette": {"main": "#HEX"}},
-    "bottom": {"description": "...", "palette": {"main": "#HEX"}},
-    "left": {"description": "...", "palette": {"main": "#HEX"}},
-    "right": {"description": "...", "palette": {"main": "#HEX"}}
-  },
-  "left_arm": { "...same as right_arm..." : "..." },
-  "right_leg": {
-    "front": {"description": "...", "palette": {"main": "#HEX"}},
-    "back": {"description": "...", "palette": {"main": "#HEX"}},
-    "top": {"description": "...", "palette": {"main": "#HEX"}},
-    "bottom": {"description": "...", "palette": {"main": "#HEX"}},
-    "left": {"description": "...", "palette": {"main": "#HEX"}},
-    "right": {"description": "...", "palette": {"main": "#HEX"}}
-  },
-  "left_leg": { "...same as right_leg..." : "..." },
-  "has_overlay": false
+REGION_KEYS = ("head", "torso", "right_arm", "left_arm", "right_leg", "left_leg")
+HAIR_STYLES = ("short", "long", "bald", "hat", "helmet")
+EYE_SHAPES = ("narrow", "round")
+MOUTH_WIDTHS = ("small", "wide")
+
+# Maps a "regions" key to the skin_map part name + the AI_GENERATED_KEYS
+# front face it produces, for every region except "head" (handled
+# separately since it's colors-plus-template, not crop-and-quantize).
+_PHOTO_PARTS = (
+    ("torso", "body", "body_front"),
+    ("right_arm", "right_arm", "right_arm_front"),
+    ("left_arm", "left_arm", "left_arm_front"),
+    ("right_leg", "right_leg", "right_leg_front"),
+    ("left_leg", "left_leg", "left_leg_front"),
+)
+
+# Same defaults as app.services.procedural.DEFAULT_COLORS, used when a front
+# face has no photo-derived color at all (region not visible, no sibling
+# limb visible either) so its fallback raw grid matches procedural fill.
+_FRONT_FALLBACK_COLOR = {
+    "body_front": "#3B5998",
+    "right_arm_front": "#C4A882",
+    "left_arm_front": "#C4A882",
+    "right_leg_front": "#1A1A3E",
+    "left_leg_front": "#1A1A3E",
 }
-"""
 
 
-def _get_client() -> AsyncOpenAI:
-    """Create an OpenAI-compatible async client for CodeBuddy.
-
-    CodeBuddy uses X-Api-Key header for authentication instead of the
-    standard Bearer token. We set a dummy api_key to satisfy the SDK
-    and inject the real key via default_headers.
-    """
-    return AsyncOpenAI(
-        api_key="placeholder",
-        base_url=settings.codebuddy_base_url,
-        default_headers={
-            "X-Api-Key": settings.codebuddy_api_key,
-        },
+def _resolve_model_name(ai_model: AIModel) -> str:
+    return (
+        settings.gemini_model_flash_lite
+        if ai_model == "flash-lite"
+        else settings.gemini_model_flash
     )
 
 
-def _build_pixel_prompt(analysis: dict[str, Any], model: ModelType) -> str:
-    """Build the prompt for pixel grid generation from analysis results."""
-    arm_w = 4 if model == "classic" else 3
-    arm_side_w = 4
+def _build_prompt() -> str:
+    return """\
+You are looking at a photo to prepare it for turning into a Minecraft skin. \
+Do NOT draw or describe any pixels — you only need to locate a few regions \
+and classify two features.
 
-    return f"""\
-You are a pixel artist creating a Minecraft skin. Based on this design plan, \
-generate the exact pixel colors for each body part face.
+Output ONLY a JSON object (no markdown, no explanation) with this structure:
 
-Design plan:
-{json.dumps(analysis, indent=2)}
+{
+  "hair_style": "short|long|bald|hat|helmet",
+  "eye_shape": "narrow|round",
+  "mouth_width": "small|wide",
+  "regions": {
+    "head":      {"visible": true, "bbox": [x0, y0, x1, y1]},
+    "torso":     {"visible": true, "bbox": [x0, y0, x1, y1]},
+    "right_arm": {"visible": true, "bbox": [x0, y0, x1, y1]},
+    "left_arm":  {"visible": true, "bbox": [x0, y0, x1, y1]},
+    "right_leg": {"visible": true, "bbox": [x0, y0, x1, y1]},
+    "left_leg":  {"visible": true, "bbox": [x0, y0, x1, y1]}
+  }
+}
 
-Model type: {model} ({arm_w}px wide arm front/back)
+RULES:
+- bbox is [x0, y0, x1, y1], each a fraction from 0 to 1 of the image's \
+width/height, top-left origin, so x1 > x0 and y1 > y0.
+- "head" should bound the WHOLE head including hair — from the very top of \
+the hair down to the chin (the top ~1/4 of this box should be hair).
+- "torso" should bound the visible chest/shirt area.
+- "right_arm"/"left_arm" are the character's own right/left (mirrored from \
+the viewer's perspective) — bound the upper arm/forearm area, not the hand.
+- "right_leg"/"left_leg" similarly bound the visible thigh/shin area.
+- If a region isn't visible in the photo at all (e.g. a headshot has no \
+visible legs), set "visible": false and omit "bbox" for that region — this \
+is expected and normal, not an error.
+- eye_shape: "narrow" if the eyes read as small/narrow in the photo, \
+"round" if they read as large/round.
+- mouth_width: "small" if the mouth is small/closed, "wide" if it is broad \
+or open (e.g. a wide smile).
+- hair_style: pick the closest category based on what's visible."""
 
-For each region below, output a 2D array of hex color strings ("#RRGGBB").
-Use "#00000000" for transparent pixels.
 
-Output ONLY a JSON object (no markdown, no explanation) with these keys. \
-Every value is a row-major 2D array [rows][cols]:
+def _prepare_image(image_bytes: bytes) -> tuple[bytes, str]:
+    """Downscale to max_image_dimension and re-encode as JPEG to cut vision tokens."""
+    img = Image.open(io.BytesIO(image_bytes))
+    img = img.convert("RGB")
 
-{{
-  "head_front":   [8 rows × 8 cols],
-  "head_back":    [8 rows × 8 cols],
-  "head_top":     [8 rows × 8 cols],
-  "head_bottom":  [8 rows × 8 cols],
-  "head_left":    [8 rows × 8 cols],
-  "head_right":   [8 rows × 8 cols],
+    max_dim = settings.max_image_dimension
+    if max(img.size) > max_dim:
+        img.thumbnail((max_dim, max_dim), Image.LANCZOS)
 
-  "body_front":   [12 rows × 8 cols],
-  "body_back":    [12 rows × 8 cols],
-  "body_top":     [4 rows × 8 cols],
-  "body_bottom":  [4 rows × 8 cols],
-  "body_left":    [12 rows × 4 cols],
-  "body_right":   [12 rows × 4 cols],
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=85)
+    return buf.getvalue(), "image/jpeg"
 
-  "right_arm_front":  [12 rows × {arm_w} cols],
-  "right_arm_back":   [12 rows × {arm_w} cols],
-  "right_arm_top":    [4 rows × {arm_w} cols],
-  "right_arm_bottom": [4 rows × {arm_w} cols],
-  "right_arm_left":   [12 rows × {arm_side_w} cols],
-  "right_arm_right":  [12 rows × {arm_side_w} cols],
 
-  "left_arm_front":   [12 rows × {arm_w} cols],
-  "left_arm_back":    [12 rows × {arm_w} cols],
-  "left_arm_top":     [4 rows × {arm_w} cols],
-  "left_arm_bottom":  [4 rows × {arm_w} cols],
-  "left_arm_left":    [12 rows × {arm_side_w} cols],
-  "left_arm_right":   [12 rows × {arm_side_w} cols],
-
-  "right_leg_front":  [12 rows × 4 cols],
-  "right_leg_back":   [12 rows × 4 cols],
-  "right_leg_top":    [4 rows × 4 cols],
-  "right_leg_bottom": [4 rows × 4 cols],
-  "right_leg_left":   [12 rows × 4 cols],
-  "right_leg_right":  [12 rows × 4 cols],
-
-  "left_leg_front":   [12 rows × 4 cols],
-  "left_leg_back":    [12 rows × 4 cols],
-  "left_leg_top":     [4 rows × 4 cols],
-  "left_leg_bottom":  [4 rows × 4 cols],
-  "left_leg_left":    [12 rows × 4 cols],
-  "left_leg_right":   [12 rows × 4 cols]
-}}
-
-PIXEL ART RULES:
-- head_front: row 0-1 = hair/forehead, row 2-3 = eyes area, row 4 = nose, \
-row 5-6 = mouth/chin, row 7 = neck/bottom
-- Use 2-4 shading levels per color for depth (highlight, base, shadow)
-- Arms/legs inner sides should be slightly darker
-- Clothing seams/edges use a 1-shade-darker variant
-- Every hex must be exactly 7 chars (#RRGGBB) or 9 chars (#RRGGBBAA)
-- Make the pixel art look good at this tiny resolution — bold shapes, clear features
-"""
+def _get_client() -> AsyncOpenAI:
+    """Create an OpenAI-compatible async client for the Gemini API."""
+    return AsyncOpenAI(
+        api_key=settings.gemini_api_key,
+        base_url=settings.gemini_base_url,
+    )
 
 
 def _extract_json(text: str) -> dict[str, Any]:
     """Extract JSON from model response, handling markdown code blocks."""
     text = text.strip()
     if text.startswith("```"):
-        # Remove markdown code fences
         lines = text.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [line for line in lines if not line.strip().startswith("```")]
         text = "\n".join(lines)
     return json.loads(text)  # type: ignore[no-any-return]
 
 
-def _validate_pixel_data(
-    data: dict[str, Any], model: ModelType
-) -> dict[str, list[list[str]]]:
-    """Validate and extract pixel grids, keeping only correctly-sized ones."""
-    regions = get_all_regions(model)
-    from app.services.skin_map import PIXEL_KEY_MAP
+def decode_indexed_grid(grid: list[list[Any]], palette: list[str]) -> list[list[str]]:
+    """Map a grid of palette indices to hex colors, clamping bad indices to palette[0]."""
+    return [
+        [
+            palette[cell] if isinstance(cell, int) and 0 <= cell < len(palette) else palette[0]
+            for cell in row
+        ]
+        for row in grid
+    ]
 
-    valid: dict[str, list[list[str]]] = {}
 
-    for key, grid in data.items():
-        if key not in PIXEL_KEY_MAP:
-            continue
-        group, face = PIXEL_KEY_MAP[key]
-        if group not in regions or face not in regions[group]:
-            continue
+def _valid_bbox(value: Any) -> Bbox | None:
+    if not (isinstance(value, list) and len(value) == 4):
+        return None
+    if not all(isinstance(v, (int, float)) for v in value):
+        return None
+    x0, y0, x1, y1 = (float(v) for v in value)
+    if not all(0.0 <= v <= 1.0 for v in (x0, y0, x1, y1)):
+        return None
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
 
-        rect = regions[group][face]
-        if (
-            isinstance(grid, list)
-            and len(grid) == rect.h
-            and all(isinstance(row, list) and len(row) == rect.w for row in grid)
-        ):
-            valid[key] = grid
+
+def _validate_regions_response(
+    data: dict[str, Any],
+) -> tuple[str, str, str, dict[str, Bbox | None], bool]:
+    """Validate the model's region-localization response.
+
+    A malformed individual region degrades to "not visible" rather than
+    failing the whole response; only a missing/invalid hair_style,
+    eye_shape, or a structurally-malformed `regions` dict fails it.
+    `mouth_width` is advisory — it never fails validation, defaulting to
+    "small" when absent or invalid.
+
+    Returns (hair_style, eye_shape, mouth_width, {region_key: bbox_or_None},
+    is_complete).
+    """
+    hair_style = data.get("hair_style")
+    eye_shape = data.get("eye_shape")
+    mouth_width = data.get("mouth_width")
+    mouth_width = mouth_width if mouth_width in MOUTH_WIDTHS else "small"
+    regions_raw = data.get("regions")
+
+    structurally_ok = (
+        hair_style in HAIR_STYLES
+        and eye_shape in EYE_SHAPES
+        and isinstance(regions_raw, dict)
+        and set(regions_raw.keys()) == set(REGION_KEYS)
+    )
+    if not structurally_ok:
+        return "", "", "small", {key: None for key in REGION_KEYS}, False
+
+    regions: dict[str, Bbox | None] = {}
+    for key in REGION_KEYS:
+        entry = regions_raw[key]
+        if isinstance(entry, dict) and entry.get("visible") is True:
+            regions[key] = _valid_bbox(entry.get("bbox"))
         else:
-            logger.warning(
-                "Invalid grid for %s: expected %dx%d, got %s",
-                key,
-                rect.h,
-                rect.w,
-                f"{len(grid)}x{len(grid[0]) if grid else 0}" if isinstance(grid, list) else type(grid),
-            )
+            regions[key] = None
 
-    return valid
+    return hair_style, eye_shape, mouth_width, regions, True
 
 
-async def analyze_image(
-    image_bytes: bytes, media_type: str, model: ModelType, style_notes: str = ""
+async def _call_vision(
+    image_bytes: bytes,
+    media_type: str,
+    style_notes: str,
+    ai_model: AIModel,
 ) -> dict[str, Any]:
-    """Step 1: Analyze the uploaded image with CodeBuddy Vision."""
     client = _get_client()
-
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    # Build user message with image (OpenAI Vision format)
     user_content: list[dict[str, Any]] = [
         {
             "type": "image_url",
-            "image_url": {
-                "url": f"data:{media_type};base64,{image_b64}",
-            },
+            "image_url": {"url": f"data:{media_type};base64,{image_b64}"},
         },
-        {"type": "text", "text": ANALYSIS_PROMPT},
+        {"type": "text", "text": _build_prompt()},
     ]
-
     if style_notes:
         user_content.append(
             {"type": "text", "text": f"\nAdditional style notes: {style_notes}"}
         )
 
     response = await client.chat.completions.create(
-        model=settings.codebuddy_vision_model,
-        max_tokens=2500,
-        temperature=0.3,
+        model=_resolve_model_name(ai_model),
+        max_tokens=800,
+        temperature=0.2,
+        # Gemini 2.5 defaults to "thinking" mode, which eats into max_tokens
+        # before any visible output — without this the response gets cut off.
+        reasoning_effort="none",
         messages=[{"role": "user", "content": user_content}],
     )
-
     text = response.choices[0].message.content or ""
     return _extract_json(text)
 
 
-async def generate_pixels(
-    analysis: dict[str, Any], model: ModelType
-) -> dict[str, list[list[str]]]:
-    """Step 2: Generate pixel grids from the analysis plan."""
-    client = _get_client()
+def _render_photo(
+    photo: Image.Image,
+    regions: dict[str, Bbox | None],
+    hair_style: str,
+    eye_shape: str,
+    mouth_width: str,
+    model: ModelType,
+) -> tuple[dict[str, list[list[str]]], dict[str, list[list[int]]], list[str], dict[str, str]]:
+    """Build pixel_data/raw index grids/palette/named-colors from a located photo.
 
-    prompt = _build_pixel_prompt(analysis, model)
+    Returns (pixel_data_hex, raw_index_grids, palette, named_colors) where
+    named_colors has whichever of shirt_main/arm_main/pants_main/
+    head_fill_color could be derived from a visible region (missing keys
+    fall back to generate_procedural_regions's own defaults).
+    """
+    face_regions = get_all_regions(model)
+    rgb_grids: dict[str, list[list[tuple[int, int, int]]]] = {}
+    shapes: dict[str, tuple[int, int]] = {}
 
-    response = await client.chat.completions.create(
-        model=settings.codebuddy_text_model,
-        max_tokens=10000,
-        temperature=0.2,
-        messages=[{"role": "user", "content": prompt}],
+    for region_key, part, front_key in _PHOTO_PARTS:
+        bbox = regions[region_key]
+        if bbox is None:
+            continue
+        crop = crop_region(photo, bbox)
+        if crop is None:
+            continue
+        rect = face_regions[part]["front"]
+        rgb_grids[front_key] = downsample_dominant(crop, rect.h, rect.w)
+        shapes[front_key] = (rect.h, rect.w)
+
+    # Remove the photo's baked-in shading so each material reads as one flat
+    # intrinsic color (Minecraft re-lights the model). Then quantize.
+    rgb_grids = consolidate_shadows(rgb_grids)
+    shared_palette, shared_indices = quantize_shared(rgb_grids)
+
+    named_colors: dict[str, str] = {}
+    pixel_data: dict[str, list[list[str]]] = {}
+    raw_grids: dict[str, list[list[int]]] = {}
+    color_key_by_front = {
+        "body_front": "shirt_main",
+        "right_arm_front": "arm_main",
+        "left_arm_front": "arm_main",
+        "right_leg_front": "pants_main",
+        "left_leg_front": "pants_main",
+    }
+    for front_key, index_grid in shared_indices.items():
+        pixel_data[front_key] = decode_indexed_grid(index_grid, shared_palette)
+        raw_grids[front_key] = index_grid
+        color_key = color_key_by_front[front_key]
+        if color_key not in named_colors:
+            named_colors[color_key] = dominant_hex(pixel_data[front_key])
+
+    # A region the model marked not-visible (or whose crop degenerated to
+    # zero size) still needs a raw index grid and hex grid of its own —
+    # persist_state["pixel_grids"] must always cover all 6 mandatory front
+    # faces so a future palette-based edit feature has something to retint
+    # for every base region, not just the ones visible in this particular
+    # photo. Falls back to the same named color a sibling limb already
+    # supplied, or otherwise the same default generate_procedural_regions
+    # would have used, so the flat fill this produces is visually identical
+    # to what procedural fill would have produced anyway.
+    for region_key, part, front_key in _PHOTO_PARTS:
+        if front_key in pixel_data:
+            continue
+        rect = face_regions[part]["front"]
+        color_key = color_key_by_front[front_key]
+        hexval = named_colors.get(color_key, _FRONT_FALLBACK_COLOR[front_key])
+        if hexval in shared_palette:
+            idx = shared_palette.index(hexval)
+        else:
+            idx = len(shared_palette)
+            shared_palette.append(hexval)
+        raw_grids[front_key] = [[idx] * rect.w for _ in range(rect.h)]
+        pixel_data[front_key] = [[hexval] * rect.w for _ in range(rect.h)]
+        if color_key not in named_colors:
+            named_colors[color_key] = hexval
+
+    head_bbox = regions["head"]
+    head_crop = crop_region(photo, head_bbox) if head_bbox is not None else None
+    if head_crop is not None:
+        face_colors = extract_face_colors(head_crop)
+    else:
+        face_colors = {
+            "skin_tone": "#C4A882",
+            "hair_color": "#5B3A1A",
+            "eye_color": "#3B5998",
+            "mouth_color": "#AA5555",
+        }
+
+    named_colors["skin_tone"] = face_colors["skin_tone"]
+    named_colors["hair_color"] = face_colors["hair_color"]
+    named_colors["head_fill_color"] = (
+        face_colors["skin_tone"] if hair_style == "bald" else face_colors["hair_color"]
     )
 
-    text = response.choices[0].message.content or ""
-    raw_data = _extract_json(text)
-    return _validate_pixel_data(raw_data, model)
+    head_hex_grid = build_head_front(face_colors, eye_shape, mouth_width)
+    head_local_palette = [
+        face_colors["skin_tone"],
+        face_colors["hair_color"],
+        face_colors["eye_color"],
+        face_colors["mouth_color"],
+    ]
+    offset = len(shared_palette)
+    head_index_grid = [
+        [offset + head_local_palette.index(hexval) for hexval in row] for row in head_hex_grid
+    ]
+    pixel_data["head_front"] = head_hex_grid
+    raw_grids["head_front"] = head_index_grid
+
+    full_palette = shared_palette + head_local_palette
+    return pixel_data, raw_grids, full_palette, named_colors
 
 
 async def generate_skin_data(
@@ -266,43 +367,56 @@ async def generate_skin_data(
     media_type: str,
     model: ModelType = "classic",
     style_notes: str = "",
+    ai_model: AIModel = "flash",
     max_retries: int = 2,
-) -> tuple[dict[str, list[list[str]]], dict[str, Any]]:
-    """Full pipeline: image → analysis → pixel data.
+) -> tuple[dict[str, list[list[str]]], dict[str, Any], dict[str, Any]]:
+    """Full pipeline: photo → one Vision call (region localization) → photo_render pixels.
 
     Returns:
-        Tuple of (pixel_data dict, analysis metadata dict).
+        (pixel_data covering all base regions, metadata, persist_state).
+        `persist_state` is ready to pass to skin_store.save_skin_state(skin_id, **persist_state).
     """
-    analysis = await analyze_image(image_bytes, media_type, model, style_notes)
-    logger.info("Analysis complete: %s", analysis.get("description", ""))
+    prepped_bytes, prepped_media_type = _prepare_image(image_bytes)
+    photo = Image.open(io.BytesIO(prepped_bytes)).convert("RGB")
 
-    pixel_data = await generate_pixels(analysis, model)
+    hair_style, eye_shape, mouth_width, regions, is_complete = "", "", "small", {}, False
+    raw: dict[str, Any] = {}
+    for attempt in range(max_retries + 1):
+        raw = await _call_vision(prepped_bytes, prepped_media_type, style_notes, ai_model)
+        hair_style, eye_shape, mouth_width, regions, is_complete = _validate_regions_response(raw)
+        if is_complete:
+            break
+        logger.warning("Attempt %d: region-localization response incomplete", attempt + 1)
 
-    # Check coverage — we expect at least 36 base layer regions (6 parts × 6 faces)
-    expected_base = 36
-    if len(pixel_data) < expected_base:
-        logger.warning(
-            "Only got %d/%d regions, retrying pixel generation...",
-            len(pixel_data),
-            expected_base,
+    if not is_complete:
+        hair_style, eye_shape, mouth_width = "short", "round", "small"
+        regions = {key: None for key in REGION_KEYS}
+
+    pixel_data, raw_grids, palette, named_colors = _render_photo(
+        photo, regions, hair_style, eye_shape, mouth_width, model
+    )
+
+    pixel_data.update(
+        generate_procedural_regions(
+            pixel_data, named_colors, model, exclude_keys=frozenset(pixel_data.keys())
         )
-        for attempt in range(max_retries):
-            retry_data = await generate_pixels(analysis, model)
-            # Merge — keep existing valid data, fill gaps
-            for k, v in retry_data.items():
-                if k not in pixel_data:
-                    pixel_data[k] = v
-            if len(pixel_data) >= expected_base:
-                break
-            logger.warning(
-                "Retry %d: %d/%d regions", attempt + 1, len(pixel_data), expected_base
-            )
+    )
 
     metadata = {
-        "description": analysis.get("description", ""),
-        "skin_tone": analysis.get("skin_tone", ""),
-        "hair_color": analysis.get("hair_color", ""),
-        "regions_generated": len(pixel_data),
+        "description": "",
+        "skin_tone": named_colors["skin_tone"],
+        "hair_color": named_colors["hair_color"],
+        "regions_generated": len(AI_GENERATED_KEYS),
+        "ai_model": ai_model,
     }
 
-    return pixel_data, metadata
+    persist_state = {
+        "model": model,
+        "ai_model": ai_model,
+        "palette": palette,
+        "pixel_grids": raw_grids,
+        "description": "",
+        "hair_style": hair_style,
+    }
+
+    return pixel_data, metadata, persist_state

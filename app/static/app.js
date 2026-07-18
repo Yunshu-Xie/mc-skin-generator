@@ -15,6 +15,7 @@ const resetBtn = document.getElementById("resetBtn");
 
 let viewer = null;
 let currentSkinUrl = null;
+let currentSkinId = null;
 
 // ── Drop Zone ──
 dropZone.addEventListener("click", () => imageInput.click());
@@ -64,6 +65,7 @@ uploadForm.addEventListener("submit", async (e) => {
     formData.append("image", imageInput.files[0]);
     formData.append("model", document.querySelector('input[name="model"]:checked').value);
     formData.append("style_notes", document.getElementById("styleNotes").value);
+    formData.append("ai_model", document.querySelector('input[name="aiModel"]:checked').value);
 
     // Show loading
     generateBtn.disabled = true;
@@ -97,7 +99,7 @@ uploadForm.addEventListener("submit", async (e) => {
         }
 
         statusDiv.hidden = true;
-        showViewer(data.skin_url, data.model, data.metadata);
+        showViewer(data.skin_id, data.skin_url, data.model, data.metadata);
     } catch (err) {
         statusDiv.hidden = true;
         errorDiv.textContent = `❌ ${err.message}`;
@@ -107,12 +109,14 @@ uploadForm.addEventListener("submit", async (e) => {
 });
 
 // ── 3D Viewer ──
-function showViewer(skinUrl, model, metadata) {
+function showViewer(skinId, skinUrl, model, metadata) {
     viewerSection.hidden = false;
+    currentSkinId = skinId;
     currentSkinUrl = skinUrl;
 
-    if (metadata && metadata.description) {
-        skinDescription.textContent = metadata.description;
+    if (metadata && metadata.ai_model) {
+        const modelLabel = metadata.ai_model === "flash-lite" ? "Flash-Lite" : "Flash";
+        skinDescription.textContent = `Generated with Gemini ${modelLabel}`;
     }
 
     if (viewer) {
@@ -156,6 +160,7 @@ resetBtn.addEventListener("click", () => {
         viewer = null;
     }
     currentSkinUrl = null;
+    currentSkinId = null;
     preview.hidden = true;
     preview.src = "";
     dropPrompt.hidden = false;

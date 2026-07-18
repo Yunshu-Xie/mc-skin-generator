@@ -6,8 +6,6 @@ Supports both Classic (Steve, 4px arms) and Slim (Alex, 3px arms) models.
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Literal
 
