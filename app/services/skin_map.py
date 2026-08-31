@@ -6,8 +6,6 @@ Supports both Classic (Steve, 4px arms) and Slim (Alex, 3px arms) models.
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Literal
 
@@ -202,7 +200,7 @@ def get_all_regions(model: ModelType) -> dict[str, dict[str, FaceRect]]:
     }
 
 
-# Mapping from Claude output keys to (region_group, face_name)
+# Mapping from pixel-grid keys to (region_group, face_name)
 PIXEL_KEY_MAP: dict[str, tuple[str, str]] = {}
 
 for _part in ["head", "body", "right_arm", "left_arm", "right_leg", "left_leg"]:

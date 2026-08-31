@@ -1,153 +1,119 @@
-"""Integration tests for the API endpoints."""
+"""API surface. The vision call is stubbed — these tests cover routing,
+validation and persistence, not model behaviour.
+"""
+
+from __future__ import annotations
+
+import io
 
 import pytest
 from fastapi.testclient import TestClient
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
 from PIL import Image
-import io
 
+from app.config import settings
 from app.main import app
+from app.services import layout as layout_module
+
+client = TestClient(app)
 
 
-@pytest.fixture
-def client():
-    return TestClient(app)
+@pytest.fixture(autouse=True)
+def isolated_skins_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "skins_dir", str(tmp_path))
+    yield
 
 
-@pytest.fixture
-def dummy_image_bytes() -> bytes:
-    """Create a small test image."""
-    img = Image.new("RGB", (100, 100), (255, 0, 0))
-    buf = io.BytesIO()
-    img.save(buf, "PNG")
-    return buf.getvalue()
+@pytest.fixture(autouse=True)
+def stub_vision(monkeypatch):
+    async def fake_analyze(*_args, **kwargs):
+        result = layout_module.default_layout("stubbed portrait")
+        result.ai_model = kwargs.get("ai_model", "flash")
+        return result
+
+    monkeypatch.setattr("app.routers.skin.analyze_photo", fake_analyze)
 
 
-def _make_solid_grid(rows: int, cols: int, color: str = "#FF0000") -> list[list[str]]:
-    return [[color] * cols for _ in range(rows)]
-
-
-def _make_dummy_pixel_data() -> dict:
-    """Create a complete set of pixel data for classic model."""
-    data = {}
-    for face in ["front", "back", "top", "bottom", "left", "right"]:
-        data[f"head_{face}"] = _make_solid_grid(8, 8, "#C4A882")
-
-    for face in ["front", "back"]:
-        data[f"body_{face}"] = _make_solid_grid(12, 8, "#3B5998")
-    for face in ["top", "bottom"]:
-        data[f"body_{face}"] = _make_solid_grid(4, 8, "#3B5998")
-    for face in ["left", "right"]:
-        data[f"body_{face}"] = _make_solid_grid(12, 4, "#3B5998")
-
-    for part in ["right_arm", "left_arm", "right_leg", "left_leg"]:
-        for face in ["front", "back", "left", "right"]:
-            data[f"{part}_{face}"] = _make_solid_grid(12, 4, "#C4A882")
-        for face in ["top", "bottom"]:
-            data[f"{part}_{face}"] = _make_solid_grid(4, 4, "#C4A882")
-
-    return data
-
-
-@patch("app.routers.skin.generate_skin_data")
-def test_generate_skin_success(mock_generate, client, dummy_image_bytes):
-    """POST /api/generate should return skin info on success."""
-    mock_generate.return_value = (
-        _make_dummy_pixel_data(),
-        {"description": "Test skin", "skin_tone": "#C4A882", "regions_generated": 36},
-    )
-
-    response = client.post(
+def _upload(portrait_bytes: bytes, **form):
+    return client.post(
         "/api/generate",
-        files={"image": ("test.png", dummy_image_bytes, "image/png")},
-        data={"model": "classic", "style_notes": ""},
+        files={"image": ("portrait.png", portrait_bytes, "image/png")},
+        data={"model": "classic", **form},
     )
 
+
+def test_generate_returns_a_skin_with_palette_and_metrics(portrait_bytes):
+    response = _upload(portrait_bytes)
     assert response.status_code == 200
-    data = response.json()
-    assert "skin_id" in data
-    assert "skin_url" in data
-    assert data["model"] == "classic"
+    body = response.json()
+
+    assert body["skin_url"] == f"/api/skin/{body['skin_id']}.png"
+    assert len(body["palette"]) == settings.palette_size
+    assert body["roles"]["skin_tone"] == 0
+    assert "head_front" in body["metrics"]
+    assert body["metadata"]["description"] == "stubbed portrait"
 
 
-@patch("app.routers.skin.generate_skin_data")
-def test_generate_skin_creates_png(mock_generate, client, dummy_image_bytes):
-    """Generated skin should be downloadable as PNG."""
-    mock_generate.return_value = (
-        _make_dummy_pixel_data(),
-        {"description": "Test", "regions_generated": 36},
-    )
+def test_generated_png_is_a_64x64_rgba_texture(portrait_bytes):
+    skin_id = _upload(portrait_bytes).json()["skin_id"]
+    response = client.get(f"/api/skin/{skin_id}.png")
+    assert response.status_code == 200
 
-    response = client.post(
-        "/api/generate",
-        files={"image": ("test.png", dummy_image_bytes, "image/png")},
-        data={"model": "classic"},
-    )
-
-    skin_url = response.json()["skin_url"]
-    skin_response = client.get(skin_url)
-    assert skin_response.status_code == 200
-    assert skin_response.headers["content-type"] == "image/png"
-
-    # Verify it's a valid 64×64 PNG
-    img = Image.open(io.BytesIO(skin_response.content))
+    img = Image.open(io.BytesIO(response.content))
     assert img.size == (64, 64)
+    assert img.mode == "RGBA"
 
 
-def test_generate_skin_invalid_model(client, dummy_image_bytes):
-    """Invalid model type should return 400."""
-    response = client.post(
-        "/api/generate",
-        files={"image": ("test.png", dummy_image_bytes, "image/png")},
-        data={"model": "invalid"},
-    )
-    assert response.status_code == 400
-
-
-def test_generate_skin_invalid_ai_model(client, dummy_image_bytes):
-    """Invalid ai_model choice should return 400."""
-    response = client.post(
-        "/api/generate",
-        files={"image": ("test.png", dummy_image_bytes, "image/png")},
-        data={"model": "classic", "ai_model": "gpt-4"},
-    )
-    assert response.status_code == 400
-
-
-@patch("app.routers.skin.generate_skin_data")
-def test_generate_skin_passes_ai_model_choice(mock_generate, client, dummy_image_bytes):
-    """ai_model from the request should be forwarded to generate_skin_data."""
-    mock_generate.return_value = (
-        _make_dummy_pixel_data(),
-        {"description": "Test", "regions_generated": 36, "ai_model": "flash-lite"},
-    )
+def test_recolor_produces_a_new_skin_without_another_upload(portrait_bytes):
+    original = _upload(portrait_bytes).json()
+    old = original["palette"][3]
 
     response = client.post(
-        "/api/generate",
-        files={"image": ("test.png", dummy_image_bytes, "image/png")},
-        data={"model": "classic", "ai_model": "flash-lite"},
+        f"/api/skin/{original['skin_id']}/recolor",
+        json={"old_color": old, "new_color": "#FF00FF"},
     )
-
     assert response.status_code == 200
-    assert mock_generate.call_args.kwargs["ai_model"] == "flash-lite"
-    assert response.json()["metadata"]["ai_model"] == "flash-lite"
+    body = response.json()
+    assert body["skin_id"] != original["skin_id"]
+    assert "#FF00FF" in body["palette"]
+    assert client.get(body["skin_url"]).status_code == 200
 
 
-def test_generate_skin_no_file(client):
-    """Missing image should return 422."""
-    response = client.post("/api/generate", data={"model": "classic"})
-    assert response.status_code == 422
-
-
-def test_get_skin_not_found(client):
-    """Non-existent skin should return 404."""
-    response = client.get("/api/skin/nonexistent.png")
+def test_recolor_of_an_unknown_skin_is_404():
+    response = client.post(
+        "/api/skin/deadbeef/recolor", json={"old_color": "#000000", "new_color": "#FFFFFF"}
+    )
     assert response.status_code == 404
 
 
-def test_get_skin_invalid_id(client):
-    """Path traversal attempt should return 400."""
-    response = client.get("/api/skin/../etc/passwd.png")
-    # FastAPI/Starlette will either 400 or 404 this
-    assert response.status_code in (400, 404, 422)
+@pytest.mark.parametrize(
+    "form,expected",
+    [({"model": "chunky"}, 400), ({"ai_model": "gpt"}, 400)],
+)
+def test_invalid_form_values_are_rejected(portrait_bytes, form, expected):
+    assert _upload(portrait_bytes, **form).status_code == expected
+
+
+def test_unsupported_content_type_is_rejected():
+    response = client.post(
+        "/api/generate",
+        files={"image": ("notes.txt", b"hello", "text/plain")},
+        data={"model": "classic"},
+    )
+    assert response.status_code == 400
+
+
+def test_empty_upload_is_rejected():
+    response = client.post(
+        "/api/generate",
+        files={"image": ("empty.png", b"", "image/png")},
+        data={"model": "classic"},
+    )
+    assert response.status_code == 400
+
+
+def test_path_traversal_in_skin_id_is_rejected():
+    assert client.get("/api/skin/..%2F..%2Fetc%2Fpasswd.png").status_code in (400, 404)
+
+
+def test_missing_skin_is_404():
+    assert client.get("/api/skin/abc12345.png").status_code == 404

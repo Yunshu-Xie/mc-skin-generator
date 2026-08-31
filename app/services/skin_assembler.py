@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PIL import Image
 
-from app.services.skin_map import FaceRect, ModelType, PIXEL_KEY_MAP, get_all_regions
+from app.services.skin_map import PIXEL_KEY_MAP, FaceRect, ModelType, get_all_regions
 
 
 def hex_to_rgba(hex_color: str) -> tuple[int, int, int, int]:
@@ -27,9 +27,7 @@ def paint_face(img: Image.Image, rect: FaceRect, pixels: list[list[str]]) -> Non
             img.putpixel((rect.x + col_idx, rect.y + row_idx), rgba)
 
 
-def validate_pixel_grid(
-    grid: list[list[str]], expected_h: int, expected_w: int
-) -> bool:
+def validate_pixel_grid(grid: list[list[str]], expected_h: int, expected_w: int) -> bool:
     """Check that a pixel grid has the correct dimensions."""
     if len(grid) != expected_h:
         return False
