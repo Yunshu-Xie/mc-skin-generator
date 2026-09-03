@@ -34,12 +34,19 @@ import numpy as np
 from app.imaging.color import linear_to_oklab, oklab_to_linear
 from app.services.shading import shift_lightness
 
-__all__ = ["HairStyle", "STYLES", "build_template", "render_face", "eye_row_from_box"]
+__all__ = [
+    "HairStyle",
+    "STYLES",
+    "HAIR_ROWS",
+    "build_template",
+    "render_face",
+    "eye_row_from_box",
+]
 
 HairStyle = Literal["short", "long", "fringe", "bald", "hat"]
 
 # Region codes used inside a template grid.
-HAIR, SKIN, EYE, SCLERA, MOUTH = "H", "S", "E", "W", "M"
+HAIR, SKIN, EYE, SCLERA, MOUTH, BROW = "H", "S", "E", "W", "M", "B"
 
 # style -> (rows of hair across the top, whether hair runs down both sides)
 STYLES: dict[str, tuple[int, bool]] = {
@@ -52,6 +59,12 @@ STYLES: dict[str, tuple[int, bool]] = {
 }
 DEFAULT_STYLE = "short"
 
+
+def HAIR_ROWS(style: str) -> int:
+    """How many full rows of hair this style puts across the top of the head."""
+    return STYLES.get(style, STYLES[DEFAULT_STYLE])[0]
+
+
 # How far below the reported eye color the eye cells are pushed, in OKLab L.
 # Large on purpose: this single local extreme is most of what makes the glyph
 # readable, and photographic eye colors are never this dark.
@@ -59,10 +72,18 @@ EYE_DARKEN = 0.40
 SCLERA_LIGHTEN = 0.07
 MOUTH_DARKEN = 0.13
 MOUTH_WARMTH = 0.02  # nudge along OKLab's a axis, toward red
+# Brows are hair, but almost always read darker than the hair on the head.
+BROW_DARKEN = 0.10
 
 
-def build_template(style: str, eye_row: int = 3) -> list[list[str]]:
-    """An 8x8 grid of region codes for the given hairstyle."""
+def build_template(style: str, eye_row: int = 3, brows: bool = True) -> list[list[str]]:
+    """An 8x8 grid of region codes for the given hairstyle.
+
+    ``brows`` costs two cells and buys a surprising amount of identity — a face
+    without them reads as blank in a way that is hard to place until you add
+    them back. They are skipped when the eye row sits directly under the hair,
+    where there is no room for them.
+    """
     hair_rows, side_hair = STYLES.get(style, STYLES[DEFAULT_STYLE])
     grid = [[SKIN] * 8 for _ in range(8)]
 
@@ -77,6 +98,10 @@ def build_template(style: str, eye_row: int = 3) -> list[list[str]]:
     grid[row][2] = EYE
     grid[row][5] = EYE
     grid[row][6] = SCLERA
+
+    if brows and row - 1 >= hair_rows:
+        grid[row - 1][2] = BROW
+        grid[row - 1][5] = BROW
 
     mouth = min(7, row + 2)
     grid[mouth][3] = MOUTH
@@ -107,6 +132,7 @@ def render_face(
     eye: np.ndarray,
     photo: np.ndarray | None = None,
     modulation: float = 0.6,
+    brows: bool = True,
 ) -> np.ndarray:
     """Draw an 8x8 head front: structure from the template, color from the photo.
 
@@ -120,13 +146,14 @@ def render_face(
     is to be the extreme values in the grid, and letting the photo lighten them
     is exactly the averaging this module exists to avoid.
     """
-    template = build_template(style, eye_row)
+    template = build_template(style, eye_row, brows)
     palette = {
         HAIR: np.asarray(hair, dtype=np.float32).reshape(3),
         SKIN: np.asarray(skin, dtype=np.float32).reshape(3),
         EYE: shift_lightness(eye, -EYE_DARKEN).reshape(3),
         SCLERA: shift_lightness(skin, SCLERA_LIGHTEN).reshape(3),
         MOUTH: _warm(shift_lightness(skin, -MOUTH_DARKEN), MOUTH_WARMTH),
+        BROW: shift_lightness(hair, -BROW_DARKEN).reshape(3),
     }
 
     out = np.stack([np.stack([palette[code] for code in row]) for row in template]).astype(
@@ -137,9 +164,6 @@ def render_face(
         return out
 
     lightness = linear_to_oklab(photo)[:, :, 0]
-    # Eyes and mouth are exempt: they are only two cells each, and letting the
-    # photo split them into two near-identical shades gets one of the pair
-    # quantized away into the surrounding skin.
     for code in (HAIR, SKIN, SCLERA):
         cells = [(r, c) for r in range(8) for c in range(8) if template[r][c] == code]
         if not cells:

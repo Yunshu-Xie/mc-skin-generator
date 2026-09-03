@@ -44,8 +44,10 @@ from app.imaging.color import (
 from app.imaging.downscale import Method, downscale, fit_crop
 from app.imaging.metrics import compare
 from app.imaging.quantize import Palette, assign, build_palette
+from app.services import clothing
 from app.services.face import eye_row_from_box, render_face
 from app.services.layout import Bbox, Layout
+from app.services.overlay import build_head_overlay
 from app.services.shading import (
     ORIENTATION_LIGHT,
     shaded_face,
@@ -104,6 +106,8 @@ ANCHORED_ROLES = (
     "arm_main",
     "pants_main",
     "shoe_color",
+    "inner_color",
+    "accent_color",
 )
 
 # The face is what a player looks at, so it gets a disproportionate say in
@@ -137,7 +141,10 @@ class RenderConfig:
     head_top_margin: float = 0.45
     head_side_margin: float = 0.12
     head_mode: str = "template"  # "template" draws the face; "photo" resamples it
+    body_mode: str = "template"  # "template" draws clothes; "photo" resamples them
     face_modulation: float = 0.6
+    brows: bool = True
+    overlay_hair: bool = True
 
     # ── albedo: a photo is material × light, a skin texture wants material ──
     # How much of each region's illumination gradient to flatten before
@@ -430,6 +437,64 @@ def stamp_eyes(
     return out, mask
 
 
+def _render_clothing_faces(
+    faces: dict[str, np.ndarray],
+    regions: dict[str, dict],
+    layout: Layout,
+    config: RenderConfig,
+) -> None:
+    """Draw the torso, arms and legs from garment templates.
+
+    Every face of a limb uses the same vertical structure, so the sleeve, cuff
+    and shoe boundaries line up all the way round; only the torso front carries
+    detail, because that is the only face a garment's design is on.
+    """
+    colors = clothing.colors_from_palette(
+        shirt=hex_to_linear(layout.role("shirt_main")),
+        inner=hex_to_linear(layout.role("inner_color")),
+        accent=hex_to_linear(layout.role("accent_color")),
+        skin=hex_to_linear(layout.role("skin_tone")),
+        pants=hex_to_linear(layout.role("pants_main")),
+        shoe=hex_to_linear(layout.role("shoe_color")),
+    )
+    top, bottom = layout.top_style, layout.bottom_style
+    modulation = config.face_modulation
+
+    def draw(key: str, template: list[list[str]]) -> None:
+        faces[key] = clothing.render_clothing(template, colors, faces.get(key), modulation)
+
+    body = regions["body"]
+    front = clothing.build_torso(top, body["front"].h, body["front"].w)
+    draw("body_front", front)
+    draw("body_back", clothing.back_of(front))
+    for face in ("left", "right"):
+        rect = body[face]
+        draw(f"body_{face}", clothing.solid(rect.h, rect.w, clothing.TOP))
+    for face in ("top", "bottom"):
+        rect = body[face]
+        draw(f"body_{face}", clothing.solid(rect.h, rect.w, clothing.TOP))
+
+    bare_arms = top == "dress"
+    for part in ("right_arm", "left_arm"):
+        for face, rect in regions[part].items():
+            if face in ("top", "bottom"):
+                code = clothing.TOP if face == "top" else clothing.SKIN
+                draw(f"{part}_{face}", clothing.solid(rect.h, rect.w, code))
+            else:
+                draw(
+                    f"{part}_{face}",
+                    clothing.build_arm(top, rect.h, rect.w, bare=bare_arms),
+                )
+
+    for part in ("right_leg", "left_leg"):
+        for face, rect in regions[part].items():
+            if face in ("top", "bottom"):
+                code = clothing.PANTS if face == "top" else clothing.SHOE
+                draw(f"{part}_{face}", clothing.solid(rect.h, rect.w, code))
+            else:
+                draw(f"{part}_{face}", clothing.build_leg(bottom, rect.h, rect.w))
+
+
 def _render_procedural_faces(
     faces: dict[str, np.ndarray],
     regions: dict[str, dict],
@@ -470,6 +535,7 @@ def render(
 
     # ── the head front: drawn, not resampled (see app/services/face.py) ──
     eye_mask: np.ndarray | None = None
+    eye_row = 3
     if config.head_mode == "template":
         head_box = used_boxes.get("head_front")
         eyes = layout.boxes.get("eyes")
@@ -486,6 +552,7 @@ def render(
             eye=hex_to_linear(layout.role("eye_color")),
             photo=faces.get("head_front"),
             modulation=config.face_modulation,
+            brows=config.brows,
         )
     elif "eyes" in layout.boxes and "head_front" in faces:
         faces["head_front"], eye_mask = stamp_eyes(
@@ -495,6 +562,9 @@ def render(
             hex_to_linear(layout.role("eye_color")),
             config.eye_strength,
         )
+
+    if config.body_mode == "template":
+        _render_clothing_faces(faces, regions, layout, config)
 
     # ── one palette for the whole skin ────────────────────────────────
     # Anchored slots are fixed in count and order, so index N always means the
@@ -540,6 +610,16 @@ def render(
             indices[eye_mask] = eye_index
         quantized[key] = palette.linear[indices]
         pixel_data[key] = [[palette_hex[i] for i in row] for row in indices]
+
+    if config.overlay_hair:
+        pixel_data.update(
+            build_head_overlay(
+                layout.hair_style,
+                palette_hex[palette.roles["hair_color"]],
+                eye_row=eye_row if config.head_mode == "template" else 3,
+                glasses=palette_hex[palette.roles["eye_color"]] if layout.has_glasses else None,
+            )
+        )
 
     metrics = {
         key: compare(sources[key], quantized[key])

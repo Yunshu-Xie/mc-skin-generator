@@ -56,8 +56,16 @@ ROLES = (
     "arm_main",
     "pants_main",
     "shoe_color",
+    "inner_color",
+    "accent_color",
 )
 REQUIRED_ROLES = ("skin_tone", "hair_color")
+
+# Coarse garment classes. Like hair_style, a class is all the templates need
+# and all a model can report reliably.
+TOP_STYLES = ("plain", "tshirt", "shirt", "jacket", "suit", "hoodie", "dress")
+BOTTOM_STYLES = ("pants", "shorts", "skirt")
+DEFAULT_TOP_STYLE, DEFAULT_BOTTOM_STYLE = "tshirt", "pants"
 
 # Which face template to draw. A coarse class is all the head needs — and all
 # a model can report reliably.
@@ -85,6 +93,8 @@ DEFAULT_ROLES: dict[str, str] = {
     "arm_main": "#C4A882",
     "pants_main": "#1A1A3E",
     "shoe_color": "#2B2B2B",
+    "inner_color": "#F2F2F0",
+    "accent_color": "#B0392B",
 }
 
 
@@ -113,6 +123,9 @@ class Layout:
     boxes: dict[str, Bbox] = field(default_factory=dict)
     roles: dict[str, str] = field(default_factory=dict)
     hair_style: str = DEFAULT_HAIR_STYLE
+    top_style: str = DEFAULT_TOP_STYLE
+    bottom_style: str = DEFAULT_BOTTOM_STYLE
+    has_glasses: bool = False
     ai_model: str = ""
     source: Literal["vision", "fallback"] = "vision"
 
@@ -154,10 +167,14 @@ they are. Do not draw anything.
     "legs":      [x0, y0, x1, y1]
   },
   "hair_style": "short | long | fringe | bald | hat",
+  "top_style": "plain | tshirt | shirt | jacket | suit | hoodie | dress",
+  "bottom_style": "pants | shorts | skirt",
+  "has_glasses": true or false,
   "roles": {
     "skin_tone": "#RRGGBB", "hair_color": "#RRGGBB", "eye_color": "#RRGGBB",
     "shirt_main": "#RRGGBB", "arm_main": "#RRGGBB",
-    "pants_main": "#RRGGBB", "shoe_color": "#RRGGBB"
+    "pants_main": "#RRGGBB", "shoe_color": "#RRGGBB",
+    "inner_color": "#RRGGBB", "accent_color": "#RRGGBB"
   }
 }
 
@@ -175,6 +192,12 @@ box is what makes the face readable — get it right even if you skip others.
 - "hair_style": "fringe" if hair covers the forehead, "long" if it falls past \
 the ears on both sides, "short" otherwise; "hat" for a cap/hood/helmet, \
 "bald" only if there is no hair at all.
+- "top_style"/"bottom_style" describe the garment's shape, not its colour. \
+Use "dress" for a one-piece; "plain" when you can see a top but cannot tell \
+what kind.
+- "inner_color" is the layer visible under an open jacket or a shirt collar \
+(white for a suit); "accent_color" is the one standout colour — a tie, a \
+trim, a hoodie's drawstrings. Repeat "shirt_main" if there is neither.
 - Colors are the dominant color of that material as it appears in the photo, \
 in normal lighting — not in shadow, not blown out.
 - Every hex value is exactly 7 characters."""
@@ -253,12 +276,18 @@ def parse_layout(data: dict[str, Any]) -> tuple[Layout, bool]:
         if parsed_hex is not None:
             roles[name] = parsed_hex
 
-    style = str(data.get("hair_style", "")).strip().lower()
+    def _class(key: str, allowed: tuple[str, ...], default: str) -> str:
+        value = str(data.get(key, "")).strip().lower()
+        return value if value in allowed else default
+
     layout = Layout(
         description=str(data.get("description", ""))[:280],
         boxes=boxes,
         roles=roles,
-        hair_style=style if style in HAIR_STYLES else DEFAULT_HAIR_STYLE,
+        hair_style=_class("hair_style", HAIR_STYLES, DEFAULT_HAIR_STYLE),
+        top_style=_class("top_style", TOP_STYLES, DEFAULT_TOP_STYLE),
+        bottom_style=_class("bottom_style", BOTTOM_STYLES, DEFAULT_BOTTOM_STYLE),
+        has_glasses=bool(data.get("has_glasses", False)),
     )
     complete = all(a in boxes for a in REQUIRED_ANCHORS) and all(r in roles for r in REQUIRED_ROLES)
     return layout, complete

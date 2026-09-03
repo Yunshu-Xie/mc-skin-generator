@@ -4,6 +4,7 @@ import pytest
 
 from app.imaging.color import hex_to_linear, linear_to_oklab
 from app.services.layout import Bbox, default_layout
+from app.services.overlay import TRANSPARENT
 from app.services.renderer import (
     ANCHORED_ROLES,
     RenderConfig,
@@ -31,14 +32,15 @@ def test_every_base_region_is_rendered_at_the_right_size(portrait_bytes):
             assert len(grid) == rect.h
             assert all(len(row) == rect.w for row in grid)
 
-    assert len(result.pixel_data) == 36
+    # 36 base faces plus the 6 head-overlay faces.
+    assert len(result.pixel_data) == 42
     assert all(key in PIXEL_KEY_MAP for key in result.pixel_data)
 
 
 def test_one_shared_palette_covers_the_whole_skin(portrait_bytes):
     """The invariant that makes recoloring a substitution instead of a re-render."""
     result = render(portrait_bytes, default_layout(), "classic")
-    palette = set(result.palette)
+    palette = set(result.palette) | {TRANSPARENT}
     used = {c for grid in result.pixel_data.values() for row in grid for c in row}
     assert used <= palette
 
@@ -58,8 +60,15 @@ def test_the_face_is_derived_from_the_photo_not_invented(portrait_bytes):
 
 
 def test_a_hard_edge_survives_instead_of_blending(portrait_bytes):
-    """A red logo on a blue shirt must not average into purple."""
-    body = render(portrait_bytes, default_layout(), "classic").pixel_data["body_front"]
+    """A red logo on a blue shirt must not average into purple.
+
+    Pinned to body_mode="photo": with garment templates the torso is drawn
+    rather than photographed, so a chest print is deliberately not preserved —
+    that is the trade this mode exists to let you decline.
+    """
+    body = render(
+        portrait_bytes, default_layout(), "classic", RenderConfig(body_mode="photo")
+    ).pixel_data["body_front"]
     center = body[6][4]
     r, g, b = (int(center[i : i + 2], 16) for i in (1, 3, 5))
     assert r > 150 and g < 90 and b < 90

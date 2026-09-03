@@ -24,7 +24,12 @@ class Settings(BaseSettings):
     # "template" draws the head front from a face template coloured by the
     # photo; "photo" resamples the photo directly (the old, unreadable path).
     head_mode: str = "template"
+    # "template" draws clothes from garment templates; "photo" resamples them
+    # (keeps chest logos, loses garment structure).
+    body_mode: str = "template"
     face_modulation: float = 0.6
+    brows: bool = True
+    overlay_hair: bool = True
     # Albedo: strip the photo's lighting so the texture is the material itself.
     flatten_shading: float = 1.0
     palette_lightness_weight: float = 0.7
