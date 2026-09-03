@@ -37,11 +37,19 @@ FIGURE = {
     "left_leg_front": (8, 20),
 }
 
+# The overlay shell, drawn over the base at the same place.
+OVERLAY_FIGURE = {"hat_front": (4, 0)}
+
 
 def _grid(pixels: list[list[str]]) -> np.ndarray:
     return np.stack([np.stack([hex_to_linear(c) for c in row]) for row in pixels]).astype(
         np.float32
     )
+
+
+def _opaque(cell: str) -> bool:
+    """A cell is drawn unless it carries an explicit zero alpha."""
+    return not (len(cell) == 9 and cell[7:9].upper() == "00")
 
 
 def front_view(pixel_data: dict[str, list[list[str]]], scale: int = 12) -> Image.Image:
@@ -54,6 +62,19 @@ def front_view(pixel_data: dict[str, list[list[str]]], scale: int = 12) -> Image
             x = 16 - w
         canvas[y : y + h, x : x + w] = grid
         alpha[y : y + h, x : x + w] = True
+
+    # Composite the model's second shell on top, or the preview silently drops
+    # everything the overlay layer contributes — hair silhouette, glasses.
+    for key, (x, y) in OVERLAY_FIGURE.items():
+        cells = pixel_data.get(key)
+        if not cells:
+            continue
+        grid = _grid(cells)
+        for row, cell_row in enumerate(cells):
+            for col, cell in enumerate(cell_row):
+                if _opaque(cell):
+                    canvas[y + row, x + col] = grid[row, col]
+                    alpha[y + row, x + col] = True
 
     rgb = linear_to_u8(canvas)
     rgb[~alpha] = (32, 34, 33)
