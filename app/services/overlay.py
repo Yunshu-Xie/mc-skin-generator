@@ -50,7 +50,10 @@ def build_head_overlay(
     with :data:`TRANSPARENT` everywhere the layer should not be drawn.
     """
     hair_rows = HAIR_ROWS(style)
-    rows = min(8, hair_rows + OVERHANG.get(style, 1))
+    # The overhang must stop above the eyes. A "fringe" style already puts
+    # three rows of hair on the base layer and its eye row sits directly under
+    # them, so an unclamped extra row draws hair straight over both eyes.
+    rows = min(8, hair_rows + OVERHANG.get(style, 1), max(0, eye_row))
     sides = style in SIDE_STYLES
 
     out = {
@@ -73,12 +76,12 @@ def build_head_overlay(
     if glasses is not None:
         row = max(0, min(7, eye_row))
         front = out["hat_front"]
-        # Two lenses and a bridge; the temples continue onto the side faces.
-        for col in (1, 2, 5, 6):
+        # Frame only. The lens cells (2 and 5) are left transparent so the eyes
+        # painted on the base layer show through them — a solid six-cell band
+        # across the eye row reads as a blindfold, not as spectacles.
+        for col in (1, 3, 4, 6):
             front[row][col] = glasses
-        front[row][3] = glasses
-        front[row][4] = glasses
-        for face in ("left", "right"):
+        for face in ("left", "right"):  # temples, running back over the ears
             out[f"hat_{face}"][row][3] = glasses
             out[f"hat_{face}"][row][4] = glasses
 
