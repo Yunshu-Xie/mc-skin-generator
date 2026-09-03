@@ -22,9 +22,11 @@ def _lightness(hex_color: str) -> float:
     return float(linear_to_oklab(hex_to_linear(hex_color).reshape(1, 3))[0, 0])
 
 
-def test_every_base_region_is_rendered_at_the_right_size(portrait_bytes):
-    result = render(portrait_bytes, default_layout(), "classic")
-    regions = get_all_regions("classic")
+@pytest.mark.parametrize("scale", [1, 2])
+def test_every_base_region_is_rendered_at_the_right_size(portrait_bytes, scale):
+    result = render(portrait_bytes, default_layout(), "classic", RenderConfig(scale=scale))
+    regions = get_all_regions("classic", scale)
+    assert result.scale == scale
 
     for group in BASE_GROUPS:
         for face, rect in regions[group].items():
@@ -37,9 +39,10 @@ def test_every_base_region_is_rendered_at_the_right_size(portrait_bytes):
     assert all(key in PIXEL_KEY_MAP for key in result.pixel_data)
 
 
-def test_one_shared_palette_covers_the_whole_skin(portrait_bytes):
+@pytest.mark.parametrize("scale", [1, 2])
+def test_one_shared_palette_covers_the_whole_skin(portrait_bytes, scale):
     """The invariant that makes recoloring a substitution instead of a re-render."""
-    result = render(portrait_bytes, default_layout(), "classic")
+    result = render(portrait_bytes, default_layout(), "classic", RenderConfig(scale=scale))
     palette = set(result.palette) | {TRANSPARENT}
     used = {c for grid in result.pixel_data.values() for row in grid for c in row}
     assert used <= palette
@@ -52,11 +55,18 @@ def test_semantic_roles_hold_fixed_palette_slots(portrait_bytes):
 
 
 def test_the_face_is_derived_from_the_photo_not_invented(portrait_bytes):
-    """Hair band on top, skin below — structure that only the photo can supply."""
-    head = render(portrait_bytes, default_layout(), "classic").pixel_data["head_front"]
-    top_row = sum(_lightness(c) for c in head[0]) / len(head[0])
-    mid_row = sum(_lightness(c) for c in head[4]) / len(head[4])
-    assert top_row < mid_row - 0.15
+    """Hair band above, face below — structure only the photo can supply.
+
+    Asserted as "the darkest row is in the upper half" rather than by comparing
+    fixed row indices: at scale 1 the head is drawn and row 0 is hair, while at
+    scale 2 it is resampled and row 0 can be background above the hairline.
+    """
+    for scale in (1, 2):
+        head = render(
+            portrait_bytes, default_layout(), "classic", RenderConfig(scale=scale)
+        ).pixel_data["head_front"]
+        means = [sum(_lightness(c) for c in row) / len(row) for row in head]
+        assert means.index(min(means)) < len(head) // 2
 
 
 def test_a_hard_edge_survives_instead_of_blending(portrait_bytes):
@@ -69,7 +79,7 @@ def test_a_hard_edge_survives_instead_of_blending(portrait_bytes):
     body = render(
         portrait_bytes, default_layout(), "classic", RenderConfig(body_mode="photo")
     ).pixel_data["body_front"]
-    center = body[6][4]
+    center = body[len(body) // 2][len(body[0]) // 2]
     r, g, b = (int(center[i : i + 2], 16) for i in (1, 3, 5))
     assert r > 150 and g < 90 and b < 90
 
@@ -83,10 +93,11 @@ def test_metrics_are_reported_for_the_scored_faces(portrait_bytes):
         assert scores["detail"] > 0.0
 
 
-def test_slim_model_narrows_the_arms(portrait_bytes):
-    result = render(portrait_bytes, default_layout(), "slim")
-    assert len(result.pixel_data["right_arm_front"][0]) == 3
-    assert len(result.pixel_data["right_arm_right"][0]) == 4
+@pytest.mark.parametrize("scale", [1, 2])
+def test_slim_model_narrows_the_arms(portrait_bytes, scale):
+    result = render(portrait_bytes, default_layout(), "slim", RenderConfig(scale=scale))
+    assert len(result.pixel_data["right_arm_front"][0]) == 3 * scale
+    assert len(result.pixel_data["right_arm_right"][0]) == 4 * scale
 
 
 def test_rendering_is_deterministic(portrait_bytes):
@@ -126,7 +137,12 @@ def test_eye_band_lands_on_the_eyes_and_uses_the_eye_color(portrait_bytes):
         portrait_bytes,
         layout,
         "classic",
-        RenderConfig(head_mode="photo", flatten_shading=0.0, palette_lightness_weight=1.0),
+        RenderConfig(
+            scale=1,
+            head_mode="photo",
+            flatten_shading=0.0,
+            palette_lightness_weight=1.0,
+        ),
     )
     head = result.pixel_data["head_front"]
     eye_hex = result.palette[result.roles["eye_color"]]
@@ -150,12 +166,12 @@ def test_eye_band_is_skipped_when_no_eyes_box_is_reported(portrait_bytes):
     layout.boxes.pop("eyes", None)
     layout.roles["eye_color"] = "#101820"
 
-    stamped = render(portrait_bytes, layout, "classic", RenderConfig(head_mode="photo"))
+    stamped = render(portrait_bytes, layout, "classic", RenderConfig(scale=1, head_mode="photo"))
     unstamped = render(
         portrait_bytes,
         layout,
         "classic",
-        RenderConfig(head_mode="photo", eye_strength=0.0),
+        RenderConfig(scale=1, head_mode="photo", eye_strength=0.0),
     )
     assert stamped.pixel_data["head_front"] == unstamped.pixel_data["head_front"]
 
@@ -163,9 +179,12 @@ def test_eye_band_is_skipped_when_no_eyes_box_is_reported(portrait_bytes):
 def test_eye_strength_zero_disables_the_override(portrait_bytes):
     layout = default_layout()
     layout.boxes["eyes"] = Bbox(0.385, 0.210, 0.615, 0.250)
-    with_eyes = render(portrait_bytes, layout, "classic", RenderConfig(head_mode="photo"))
+    with_eyes = render(portrait_bytes, layout, "classic", RenderConfig(scale=1, head_mode="photo"))
     without = render(
-        portrait_bytes, layout, "classic", RenderConfig(head_mode="photo", eye_strength=0.0)
+        portrait_bytes,
+        layout,
+        "classic",
+        RenderConfig(scale=1, head_mode="photo", eye_strength=0.0),
     )
     assert with_eyes.pixel_data["head_front"] != without.pixel_data["head_front"]
 

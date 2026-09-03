@@ -43,21 +43,24 @@ def build_head_overlay(
     hair: str,
     eye_row: int = 3,
     glasses: str | None = None,
+    size: int = 8,
 ) -> dict[str, list[list[str]]]:
     """Hair silhouette (and optionally glasses) on the head's overlay layer.
 
     Returns the ``hat_*`` grids for :func:`app.services.skin_assembler.assemble_skin`,
     with :data:`TRANSPARENT` everywhere the layer should not be drawn.
     """
-    hair_rows = HAIR_ROWS(style)
+    unit = max(1, size // 8)
+    hair_rows = HAIR_ROWS(style) * unit
     # The overhang must stop above the eyes. A "fringe" style already puts
     # three rows of hair on the base layer and its eye row sits directly under
     # them, so an unclamped extra row draws hair straight over both eyes.
-    rows = min(8, hair_rows + OVERHANG.get(style, 1), max(0, eye_row))
+    rows = min(size, hair_rows + OVERHANG.get(style, 1) * unit, max(0, eye_row))
     sides = style in SIDE_STYLES
 
     out = {
-        f"hat_{face}": _blank(8, 8) for face in ("front", "back", "left", "right", "top", "bottom")
+        f"hat_{face}": _blank(size, size)
+        for face in ("front", "back", "left", "right", "top", "bottom")
     }
 
     if hair_rows == 0 and glasses is None:
@@ -67,22 +70,26 @@ def build_head_overlay(
         for face in ("front", "back", "left", "right"):
             grid = out[f"hat_{face}"]
             for row in range(rows):
-                grid[row] = [hair] * 8
+                grid[row] = [hair] * size
             if sides:
-                for row in range(rows, 8):
-                    grid[row][0] = grid[row][7] = hair
-        out["hat_top"] = [[hair] * 8 for _ in range(8)]
+                for row in range(rows, size):
+                    for col in list(range(unit)) + list(range(size - unit, size)):
+                        grid[row][col] = hair
+        out["hat_top"] = [[hair] * size for _ in range(size)]
 
     if glasses is not None:
-        row = max(0, min(7, eye_row))
+        row = max(0, min(size - unit, eye_row))
         front = out["hat_front"]
-        # Frame only. The lens cells (2 and 5) are left transparent so the eyes
-        # painted on the base layer show through them — a solid six-cell band
-        # across the eye row reads as a blindfold, not as spectacles.
-        for col in (1, 3, 4, 6):
-            front[row][col] = glasses
+        # Frame only. The lens cells (columns 2 and 5 in eighths) are left
+        # transparent so the eyes painted on the base layer show through them —
+        # a solid band across the eye row reads as a blindfold, not spectacles.
+        for eighth in (1, 3, 4, 6):
+            for r in range(row, min(size, row + unit)):
+                for c in range(eighth * unit, (eighth + 1) * unit):
+                    front[r][c] = glasses
         for face in ("left", "right"):  # temples, running back over the ears
-            out[f"hat_{face}"][row][3] = glasses
-            out[f"hat_{face}"][row][4] = glasses
+            for r in range(row, min(size, row + unit)):
+                for c in range(3 * unit, 5 * unit):
+                    out[f"hat_{face}"][r][c] = glasses
 
     return out

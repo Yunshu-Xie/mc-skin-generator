@@ -12,8 +12,11 @@ the photo is allowed back in only to restore lightness variation within each
 region (:mod:`app.services.templating`).
 
 The templates are built programmatically rather than written out as literal
-grids, because arm width differs between the classic and slim models and a
-literal grid would have to exist twice.
+grids, for two reasons: arm width differs between the classic and slim models,
+and every position has to hold at 64x64 and at 128x128. Positions are given as
+fractions of the face, with ``unit`` (1 at 64x64, 2 at 128x128) for the few
+features whose thickness is measured in pixels rather than proportions — a
+cuff, a shoe.
 
 What this costs: a logo or a printed pattern on a chest no longer survives,
 because the torso is no longer a photograph of that chest. ``body_mode="photo"``
@@ -57,66 +60,72 @@ def solid(height: int, width: int, code: str) -> list[list[str]]:
     return [[code] * width for _ in range(height)]
 
 
-def build_torso(style: str, height: int, width: int) -> list[list[str]]:
+def _span(total: int, lo: float, hi: float) -> range:
+    """The columns (or rows) between two fractions of a face's extent."""
+    return range(max(0, int(total * lo)), min(total, max(int(total * lo) + 1, int(total * hi))))
+
+
+def build_torso(style: str, height: int, width: int, unit: int = 1) -> list[list[str]]:
     """Front of the torso: the only face where a garment has real structure."""
     grid = solid(height, width, TOP)
     if width < 4 or height < 4:
         return grid
 
-    mid = width // 2
     if style in LAYERED:
-        # An open jacket: a column of the inner layer down the middle, closing
-        # about two thirds of the way down where the garment buttons.
-        close = max(2, int(height * 0.45))
-        for row in range(height):
-            for col in range(mid - 2, mid + 2):
-                if 0 <= col < width and row < close:
-                    grid[row][col] = INNER
+        # An open jacket: a band of the inner layer down the middle, closing
+        # about halfway down where the garment buttons.
+        close = max(2 * unit, int(height * 0.45))
+        for row in range(min(close, height)):
+            for col in _span(width, 0.25, 0.75):
+                grid[row][col] = INNER
         if style == "suit":
-            for row in range(1, close + 2):
-                for col in (mid - 1, mid):
-                    if 0 <= col < width:
-                        grid[row][col] = ACCENT
+            for row in range(unit, min(height, close + 2 * unit)):
+                for col in _span(width, 0.375, 0.625):
+                    grid[row][col] = ACCENT
         if style == "hoodie":  # a pouch pocket low on the front
-            for row in range(int(height * 0.6), int(height * 0.8)):
-                for col in range(1, width - 1):
+            for row in _span(height, 0.60, 0.80):
+                for col in _span(width, 0.125, 0.875):
                     grid[row][col] = ACCENT
     elif style == "tshirt":
-        for col in range(mid - 1, mid + 1):  # a small neckline
-            if 0 <= col < width:
-                grid[0][col] = SKIN
+        for row in range(min(unit, height)):  # a small neckline
+            for col in _span(width, 0.375, 0.625):
+                grid[row][col] = SKIN
     return grid
 
 
-def build_arm(style: str, height: int, width: int, bare: bool = False) -> list[list[str]]:
+def build_arm(
+    style: str, height: int, width: int, bare: bool = False, unit: int = 1
+) -> list[list[str]]:
     """Arms: sleeve down to some row, skin below it, cuff where it ends."""
     if bare or style == "dress":
         return solid(height, width, SKIN)
 
-    sleeve = height - 2 if style in LONG_SLEEVED else int(height * 0.45)
+    sleeve = height - 2 * unit if style in LONG_SLEEVED else int(height * 0.45)
     grid = solid(height, width, SKIN)
-    for row in range(min(sleeve, height)):
+    for row in range(max(0, min(sleeve, height))):
         grid[row] = [TOP] * width
-    if style in LONG_SLEEVED and sleeve < height:
-        grid[sleeve] = [INNER] * width  # a cuff
+    if style in LONG_SLEEVED:  # a cuff, one unit thick
+        for row in range(max(0, sleeve), min(height, sleeve + unit)):
+            grid[row] = [INNER] * width
     return grid
 
 
-def build_leg(style: str, height: int, width: int) -> list[list[str]]:
+def build_leg(style: str, height: int, width: int, unit: int = 1) -> list[list[str]]:
     """Legs: trouser down to some row, skin below, shoe at the bottom."""
     grid = solid(height, width, SKIN)
+    shoe = SHOE_ROWS * unit
     if style == "shorts":
         covered = int(height * 0.45)
     elif style == "skirt":
         covered = int(height * 0.3)
     else:
-        covered = height - SHOE_ROWS
+        covered = height - shoe
 
-    for row in range(min(covered, height)):
+    for row in range(max(0, min(covered, height))):
         grid[row] = [PANTS] * width
     # Shoes on every side, not just the sole — the old code painted only
     # leg_bottom, which is the one face a player never sees.
-    for row in range(max(0, height - SHOE_ROWS), height):
+    for row in range(max(0, height - shoe), height):
         grid[row] = [SHOE] * width
     return grid
 

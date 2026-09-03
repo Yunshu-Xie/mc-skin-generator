@@ -121,6 +121,7 @@ function showViewer(skinUrl, model, result) {
 
     showPalette(result);
     showFidelity(result);
+    showDownloads(result);
 
     if (viewer) {
         viewer.dispose();
@@ -210,3 +211,21 @@ function showFidelity(result) {
         `· 细节保留 ${head.detail.toFixed(2)}`;
     line.hidden = false;
 }
+
+
+// ── Downloads ──
+// Vanilla Java only accepts 64x64, so a larger texture always ships with a
+// 64x64 companion and both are offered.
+let currentVanillaUrl = null;
+
+function showDownloads(result) {
+    const button = document.getElementById("downloadVanillaBtn");
+    currentVanillaUrl = (result && result.vanilla_url) || null;
+    button.hidden = !currentVanillaUrl;
+    const size = 64 * ((result && result.scale) || 1);
+    document.getElementById("downloadBtn").textContent = `⬇ 下载 ${size}×${size} .png`;
+}
+
+document.getElementById("downloadVanillaBtn").addEventListener("click", () => {
+    if (currentVanillaUrl) window.location.href = currentVanillaUrl;
+});

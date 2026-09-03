@@ -41,6 +41,7 @@ ruff check . && ruff format .
 - `GEMINI_BASE_URL` — Gemini 的 OpenAI 兼容端点
 - `GEMINI_MODEL_FLASH` / `GEMINI_MODEL_FLASH_LITE` / `GEMINI_DEFAULT_MODEL` — 逐请求用 `ai_model` 字段（`"flash"` / `"flash-lite"`）选择
 - `MAX_IMAGE_DIMENSION` — 发给 vision 前压缩到的最长边（默认 768）
+- `SKIN_SCALE` — 1 = 64×64，2 = 128×128（默认）
 - 渲染参数：`PALETTE_SIZE`（16）、`FACE_METHOD`（`dpid`）、`MATERIAL_METHOD`（`dominant`）、`PRESHARPEN`（0.45）、`DPID_LAMBDA`（1.4）
 
 `app/config.py` 通过 pydantic-settings 读取。
@@ -74,7 +75,7 @@ ruff check . && ruff format .
 背面/内侧从**同一张调色板**取色，按面朝向做 OKLab 明度偏移 + 柔和的上下渐变。旧的 `flat_fill_with_border`（1px 深色描边）被删掉了——那让每条肢体在游戏里读起来像一个画出来的方框。
 
 ### `app/services/skin_map.py` / `skin_assembler.py`
-64×64 UV 坐标表与 PNG 组装。**接口未改动**，仍然只认 `{key: 2D hex 数组}`。
+UV 坐标表与 PNG 组装，**按 `scale` 参数化**：1 = 64×64，2 = 128×128（UV 布局尺度无关，所以只是把每个矩形乘个系数）。仍然只认 `{key: 2D hex 数组}`。
 
 ### API (`app/routers/skin.py`)
 - `POST /api/generate` — multipart 上传 + `model`（classic/slim）+ 可选 `ai_model`；返回 skin_id、palette、roles、metrics
@@ -87,6 +88,8 @@ ruff check . && ruff format .
 - **贴图存 albedo，不存阴影**：去阴影 + 调色板按材质而非明度聚类 + 取簇的高分位明度；朝向明暗不烘进贴图，交给游戏
 - **一切在线性光 / OKLab 里做**：不在 sRGB 上平均，不用 HSV 表示明度
 - **按内容选降采样方法**：衣服四肢要色块干净（`dominant`）；`dpid` 仍用于 `head_top`
+- **分辨率决定算法**：`head_mode`/`body_mode` 默认 `auto` —— scale 1（8×8 脸）必须绘制，scale 2（16×16 脸）改走照片重采样。见 ARCHITECTURE §9
+- **128×128 是主产物，64×64 是兜底**：原版 Java 只收 64×64，所以每次都导出两份
 - **该采样的采样，该绘制的绘制**：头和衣服都由模板绘制，照片只提供颜色与区域内明暗。管线的每一层都值得问一次这个问题
 - **两层都要用**：基础层 + overlay 共 3264 格，只用一半等于浪费一半
 - **一张调色板管全身**：材质一致性 + 让改色变成 O(1) 操作

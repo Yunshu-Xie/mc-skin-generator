@@ -23,10 +23,13 @@ class Settings(BaseSettings):
     head_side_margin: float = 0.12
     # "template" draws the head front from a face template coloured by the
     # photo; "photo" resamples the photo directly (the old, unreadable path).
-    head_mode: str = "template"
+    # Texture scale: 1 = 64x64, 2 = 128x128. Vanilla Java only accepts 64x64,
+    # so a 64x64 companion is always exported alongside a larger primary.
+    skin_scale: int = 2
+    head_mode: str = "auto"
     # "template" draws clothes from garment templates; "photo" resamples them
     # (keeps chest logos, loses garment structure).
-    body_mode: str = "template"
+    body_mode: str = "auto"
     face_modulation: float = 0.6
     brows: bool = True
     overlay_hair: bool = True

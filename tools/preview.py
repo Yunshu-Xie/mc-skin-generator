@@ -53,19 +53,25 @@ def _opaque(cell: str) -> bool:
 
 
 def front_view(pixel_data: dict[str, list[list[str]]], scale: int = 12) -> Image.Image:
-    canvas = np.zeros((32, 16, 3), dtype=np.float32)
-    alpha = np.zeros((32, 16), dtype=bool)
+    # The figure coordinates are written for a 64x64 texture; a 128x128 one is
+    # the same layout at 2x, so read the factor off the head we were handed.
+    unit = max(1, len(pixel_data["head_front"]) // 8)
+    canvas = np.zeros((32 * unit, 16 * unit, 3), dtype=np.float32)
+    alpha = np.zeros((32 * unit, 16 * unit), dtype=bool)
+    scale = max(1, scale // unit)
     for key, (x, y) in FIGURE.items():
+        x, y = x * unit, y * unit
         grid = _grid(pixel_data[key])
         h, w = grid.shape[:2]
-        if key == "left_arm_front":  # slim arms are 3px; keep them right-aligned
-            x = 16 - w
+        if key == "left_arm_front":  # slim arms are narrow; keep them right-aligned
+            x = 16 * unit - w
         canvas[y : y + h, x : x + w] = grid
         alpha[y : y + h, x : x + w] = True
 
     # Composite the model's second shell on top, or the preview silently drops
     # everything the overlay layer contributes — hair silhouette, glasses.
     for key, (x, y) in OVERLAY_FIGURE.items():
+        x, y = x * unit, y * unit
         cells = pixel_data.get(key)
         if not cells:
             continue
@@ -96,6 +102,13 @@ def main() -> int:
     parser.add_argument("--face", type=_box)
     parser.add_argument("--eyes", type=_box)
     parser.add_argument("--model", default="classic", choices=["classic", "slim"])
+    parser.add_argument(
+        "--scale",
+        type=int,
+        default=2,
+        choices=[1, 2],
+        help="1 = 64x64 (vanilla Java), 2 = 128x128 (default)",
+    )
     parser.add_argument("--out", type=Path, default=Path("preview.png"))
     args = parser.parse_args()
 
@@ -110,8 +123,9 @@ def main() -> int:
     if args.eyes:
         layout.boxes["eyes"] = args.eyes
 
-    result = render(image_bytes, layout, args.model, RenderConfig())
+    result = render(image_bytes, layout, args.model, RenderConfig(scale=args.scale))
 
+    print(f"scale    : {result.scale}  ({64 * result.scale}x{64 * result.scale})")
     print(f"layout   : {layout.source}  {layout.description}")
     for name in sorted(layout.boxes):
         box = layout.boxes[name]
@@ -128,7 +142,7 @@ def main() -> int:
         )
 
     figure = front_view(result.pixel_data)
-    texture = assemble_skin(result.pixel_data, args.model)
+    texture = assemble_skin(result.pixel_data, args.model, result.scale)
     texture_big = texture.convert("RGB").resize((384, 384), Image.NEAREST)
     source = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     source.thumbnail((384, 384))

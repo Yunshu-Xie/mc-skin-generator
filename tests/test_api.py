@@ -53,14 +53,34 @@ def test_generate_returns_a_skin_with_palette_and_metrics(portrait_bytes):
     assert body["metadata"]["description"] == "stubbed portrait"
 
 
-def test_generated_png_is_a_64x64_rgba_texture(portrait_bytes):
-    skin_id = _upload(portrait_bytes).json()["skin_id"]
-    response = client.get(f"/api/skin/{skin_id}.png")
-    assert response.status_code == 200
+def test_the_primary_texture_matches_the_requested_scale(portrait_bytes):
+    body = _upload(portrait_bytes, scale="2").json()
+    assert body["scale"] == 2
 
-    img = Image.open(io.BytesIO(response.content))
-    assert img.size == (64, 64)
+    img = Image.open(io.BytesIO(client.get(body["skin_url"]).content))
+    assert img.size == (128, 128)
     assert img.mode == "RGBA"
+
+
+def test_a_64x64_companion_ships_with_every_larger_texture(portrait_bytes):
+    """Vanilla Java rejects anything but 64x64, so it always gets one."""
+    body = _upload(portrait_bytes, scale="2").json()
+    assert body["vanilla_url"]
+
+    img = Image.open(io.BytesIO(client.get(body["vanilla_url"]).content))
+    assert img.size == (64, 64)
+
+
+def test_scale_one_produces_no_companion(portrait_bytes):
+    body = _upload(portrait_bytes, scale="1").json()
+    assert body["scale"] == 1 and body["vanilla_url"] == ""
+
+    img = Image.open(io.BytesIO(client.get(body["skin_url"]).content))
+    assert img.size == (64, 64)
+
+
+def test_an_unsupported_scale_is_rejected(portrait_bytes):
+    assert _upload(portrait_bytes, scale="4").status_code == 400
 
 
 def test_recolor_produces_a_new_skin_without_another_upload(portrait_bytes):

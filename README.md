@@ -1,6 +1,6 @@
 # mc-skin-generator
 
-照片 → Minecraft 皮肤。上传一张图，得到一张可直接使用的 64×64 皮肤 PNG，附带浏览器内 3D 预览和一键下载。
+照片 → Minecraft 皮肤。上传一张图，得到一张 **128×128** 的皮肤 PNG（外加一份 64×64 兜底，因为原版 Java 只收这个尺寸），附带浏览器内 3D 预览和一键下载。
 
 关键在于分工：**AI 只判断语义**（脸、眼睛、上身、四肢在照片里的位置，以及各材质的颜色），**像素全部由一条真实的图像处理管线从照片本身推导**——线性光、OKLab、结构保持降采样、全局联合调色板量化。
 
@@ -24,6 +24,7 @@
 - **一张调色板管全身**：材质在各部位之间保持一致；前 7 个槽是固定的语义角色
 - **免费改色**：`POST /api/skin/{id}/recolor` 换掉一个调色板颜色——不调 AI、不重新渲染
 - **自带质量指标**：每次生成返回 SSIM / ΔE / 细节保留，调参不靠感觉
+- **两种分辨率**：128×128 为主（Bedrock 原生／Java 装 HD Skins 或 CustomSkinLoader），每次同时导出 64×64 兜底。分辨率还决定算法——8×8 的脸必须绘制，16×16 的脸改走照片重采样
 - **Classic & Slim**、**3D 预览**（[skinview3d](https://github.com/bs-community/skinview3d)）、**直接下载**
 - **离线可跑**：没有 API Key 时用默认版式，仍能跑通整条管线
 
@@ -63,12 +64,12 @@ python3 tools/compare.py photo.jpg --ai
 |---|---|---|
 | `POST` | `/api/generate` | multipart 上传 + `model`（classic/slim）+ 可选 `ai_model`。返回 `skin_id` / `palette` / `roles` / `metrics` |
 | `POST` | `/api/skin/{id}/recolor` | `{"old_color": "#3B5998", "new_color": "#B03030"}`。不调 AI |
-| `GET` | `/api/skin/{id}.png` | 下载 |
+| `GET` | `/api/skin/{id}.png` | 下载主贴图；`?vanilla=1` 取 64×64 兜底 |
 
 ## 测试
 
 ```bash
-pytest           # 81 项，含色彩科学的数值回归测试
+pytest           # 132 项，含色彩科学的数值回归测试
 ruff check .
 ```
 

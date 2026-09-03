@@ -31,6 +31,15 @@ def data_path(skin_id: str) -> Path:
     return _dir() / f"{skin_id}.json"
 
 
+def companion_path(skin_id: str) -> Path:
+    """The 64x64 copy that vanilla Java will actually accept."""
+    return _dir() / f"{skin_id}_64.png"
+
+
+def save_companion(skin_id: str, image: Image.Image) -> None:
+    image.save(str(companion_path(skin_id)), "PNG")
+
+
 def save(skin_id: str, image: Image.Image, record: dict[str, Any]) -> None:
     image.save(str(png_path(skin_id)), "PNG")
     data_path(skin_id).write_text(json.dumps(record), encoding="utf-8")

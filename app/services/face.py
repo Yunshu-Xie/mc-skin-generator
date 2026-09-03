@@ -76,46 +76,69 @@ MOUTH_WARMTH = 0.02  # nudge along OKLab's a axis, toward red
 BROW_DARKEN = 0.10
 
 
-def build_template(style: str, eye_row: int = 3, brows: bool = True) -> list[list[str]]:
-    """An 8x8 grid of region codes for the given hairstyle.
+def build_template(
+    style: str, eye_row: int = 3, brows: bool = True, size: int = 8
+) -> list[list[str]]:
+    """A ``size`` x ``size`` grid of region codes for the given hairstyle.
+
+    Every position is written as a multiple of ``size // 8``, so the same
+    template describes a 64x64 skin's 8x8 face and a 128x128 skin's 16x16 one.
+    A doubled template is not a *better* face — it is the same face with
+    thicker strokes — which is exactly why at 16x16 the photo path takes over
+    (docs/ARCHITECTURE.md section 9). This exists so the drawn path stays
+    available at any scale, not because it improves with one.
 
     ``brows`` costs two cells and buys a surprising amount of identity — a face
     without them reads as blank in a way that is hard to place until you add
     them back. They are skipped when the eye row sits directly under the hair,
     where there is no room for them.
     """
-    hair_rows, side_hair = STYLES.get(style, STYLES[DEFAULT_STYLE])
-    grid = [[SKIN] * 8 for _ in range(8)]
+    unit = max(1, size // 8)
+    base_rows, side_hair = STYLES.get(style, STYLES[DEFAULT_STYLE])
+    hair_rows = base_rows * unit
+    grid = [[SKIN] * size for _ in range(size)]
 
     for row in range(hair_rows):
-        grid[row] = [HAIR] * 8
+        grid[row] = [HAIR] * size
     if side_hair:
-        for row in range(hair_rows, 8):
-            grid[row][0] = grid[row][7] = HAIR
+        for row in range(hair_rows, size):
+            for col in list(range(unit)) + list(range(size - unit, size)):
+                grid[row][col] = HAIR
 
-    row = max(hair_rows, min(5, eye_row))
-    grid[row][1] = SCLERA
-    grid[row][2] = EYE
-    grid[row][5] = EYE
-    grid[row][6] = SCLERA
+    row = max(hair_rows, min(size - 3 * unit, eye_row))
 
-    if brows and row - 1 >= hair_rows:
-        grid[row - 1][2] = BROW
-        grid[row - 1][5] = BROW
+    def block(r0: int, r1: int, c0: int, c1: int, code: str) -> None:
+        for r in range(max(0, r0), min(size, r1)):
+            for c in range(max(0, c0), min(size, c1)):
+                grid[r][c] = code
 
-    mouth = min(7, row + 2)
-    grid[mouth][3] = MOUTH
-    grid[mouth][4] = MOUTH
+    block(row, row + unit, 1 * unit, 2 * unit, SCLERA)
+    block(row, row + unit, 2 * unit, 3 * unit, EYE)
+    block(row, row + unit, 5 * unit, 6 * unit, EYE)
+    block(row, row + unit, 6 * unit, 7 * unit, SCLERA)
+
+    if brows and row - unit >= hair_rows:
+        block(row - unit, row, 2 * unit, 3 * unit, BROW)
+        block(row - unit, row, 5 * unit, 6 * unit, BROW)
+
+    mouth = min(size - unit, row + 2 * unit)
+    block(mouth, mouth + unit, 3 * unit, 5 * unit, MOUTH)
     return grid
 
 
-def eye_row_from_box(face_y0: float, face_y1: float, eyes_y0: float, eyes_y1: float) -> int:
-    """Which of the 8 rows the reported eye band falls in."""
+def eye_row_from_box(
+    face_y0: float,
+    face_y1: float,
+    eyes_y0: float,
+    eyes_y1: float,
+    rows: int = 8,
+) -> int:
+    """Which of the face's ``rows`` rows the reported eye band falls in."""
     span = face_y1 - face_y0
     if span <= 0:
-        return 3
+        return 3 * rows // 8
     center = ((eyes_y0 + eyes_y1) / 2.0 - face_y0) / span
-    return int(max(0, min(7, round(center * 8 - 0.5))))
+    return int(max(0, min(rows - 1, round(center * rows - 0.5))))
 
 
 def _warm(color: np.ndarray, amount: float) -> np.ndarray:
@@ -133,6 +156,7 @@ def render_face(
     photo: np.ndarray | None = None,
     modulation: float = 0.6,
     brows: bool = True,
+    size: int = 8,
 ) -> np.ndarray:
     """Draw an 8x8 head front: structure from the template, color from the photo.
 
@@ -146,7 +170,7 @@ def render_face(
     is to be the extreme values in the grid, and letting the photo lighten them
     is exactly the averaging this module exists to avoid.
     """
-    template = build_template(style, eye_row, brows)
+    template = build_template(style, eye_row, brows, size)
     palette = {
         HAIR: np.asarray(hair, dtype=np.float32).reshape(3),
         SKIN: np.asarray(skin, dtype=np.float32).reshape(3),

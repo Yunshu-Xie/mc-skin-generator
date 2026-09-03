@@ -140,8 +140,24 @@ class RenderConfig:
     eye_strength: float = EYE_STRENGTH
     head_top_margin: float = 0.45
     head_side_margin: float = 0.12
-    head_mode: str = "template"  # "template" draws the face; "photo" resamples it
-    body_mode: str = "template"  # "template" draws clothes; "photo" resamples them
+
+    def drawn_head(self) -> bool:
+        return self.head_mode == "template" or (self.head_mode == "auto" and self.scale == 1)
+
+    def drawn_body(self) -> bool:
+        return self.body_mode == "template" or (self.body_mode == "auto" and self.scale == 1)
+
+    # Texture scale: 1 = 64x64 (vanilla Java), 2 = 128x128 (Bedrock, or Java
+    # with a client mod). Everything below scales with it.
+    scale: int = 2
+
+    # "auto" picks by scale, and the choice is measured rather than assumed.
+    # At 8x8 an eye covers 0.6 of a cell, so no resampler can render one and
+    # the face has to be drawn. At 16x16 it covers 1.3 cells and resampling
+    # starts carrying real likeness — which is the whole reason for moving to
+    # 128x128. "template" and "photo" force one or the other.
+    head_mode: str = "auto"
+    body_mode: str = "auto"
     face_modulation: float = 0.6
     brows: bool = True
     overlay_hair: bool = True
@@ -174,6 +190,7 @@ class RenderConfig:
 @dataclass
 class RenderResult:
     pixel_data: dict[str, list[list[str]]]
+    scale: int = 1
     palette: list[str] = field(default_factory=list)
     roles: dict[str, int] = field(default_factory=dict)
     metrics: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -459,12 +476,13 @@ def _render_clothing_faces(
     )
     top, bottom = layout.top_style, layout.bottom_style
     modulation = config.face_modulation
+    unit = config.scale
 
     def draw(key: str, template: list[list[str]]) -> None:
         faces[key] = clothing.render_clothing(template, colors, faces.get(key), modulation)
 
     body = regions["body"]
-    front = clothing.build_torso(top, body["front"].h, body["front"].w)
+    front = clothing.build_torso(top, body["front"].h, body["front"].w, unit)
     draw("body_front", front)
     draw("body_back", clothing.back_of(front))
     for face in ("left", "right"):
@@ -483,7 +501,7 @@ def _render_clothing_faces(
             else:
                 draw(
                     f"{part}_{face}",
-                    clothing.build_arm(top, rect.h, rect.w, bare=bare_arms),
+                    clothing.build_arm(top, rect.h, rect.w, bare=bare_arms, unit=unit),
                 )
 
     for part in ("right_leg", "left_leg"):
@@ -492,7 +510,7 @@ def _render_clothing_faces(
                 code = clothing.PANTS if face == "top" else clothing.SHOE
                 draw(f"{part}_{face}", clothing.solid(rect.h, rect.w, code))
             else:
-                draw(f"{part}_{face}", clothing.build_leg(bottom, rect.h, rect.w))
+                draw(f"{part}_{face}", clothing.build_leg(bottom, rect.h, rect.w, unit))
 
 
 def _render_procedural_faces(
@@ -526,7 +544,7 @@ def render(
 ) -> RenderResult:
     """Render a full set of hex pixel grids for every base region of the skin."""
     config = config or RenderConfig()
-    regions = get_all_regions(model)
+    regions = get_all_regions(model, config.scale)
 
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     lin = u8_to_linear(np.asarray(image))
@@ -536,13 +554,14 @@ def render(
     # ── the head front: drawn, not resampled (see app/services/face.py) ──
     eye_mask: np.ndarray | None = None
     eye_row = 3
-    if config.head_mode == "template":
+    head_size = regions["head"]["front"].h
+    if config.drawn_head():
         head_box = used_boxes.get("head_front")
         eyes = layout.boxes.get("eyes")
         eye_row = (
-            eye_row_from_box(head_box.y0, head_box.y1, eyes.y0, eyes.y1)
+            eye_row_from_box(head_box.y0, head_box.y1, eyes.y0, eyes.y1, head_size)
             if head_box is not None and eyes is not None
-            else 3
+            else 3 * head_size // 8
         )
         faces["head_front"] = render_face(
             style=layout.hair_style,
@@ -553,6 +572,7 @@ def render(
             photo=faces.get("head_front"),
             modulation=config.face_modulation,
             brows=config.brows,
+            size=head_size,
         )
     elif "eyes" in layout.boxes and "head_front" in faces:
         faces["head_front"], eye_mask = stamp_eyes(
@@ -563,7 +583,7 @@ def render(
             config.eye_strength,
         )
 
-    if config.body_mode == "template":
+    if config.drawn_body():
         _render_clothing_faces(faces, regions, layout, config)
 
     # ── one palette for the whole skin ────────────────────────────────
@@ -629,6 +649,7 @@ def render(
 
     return RenderResult(
         pixel_data=pixel_data,
+        scale=config.scale,
         palette=palette_hex,
         roles=palette.roles,
         metrics=metrics,

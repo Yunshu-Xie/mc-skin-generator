@@ -11,6 +11,10 @@ class SkinGenerateResponse(BaseModel):
     skin_id: str
     skin_url: str
     model: str
+    scale: int = 1
+    #: Always 64x64. Vanilla Java rejects anything else, so the larger texture
+    #: is the primary and this is the one that can actually be uploaded.
+    vanilla_url: str = ""
     palette: List[str] = Field(default_factory=list)
     roles: Dict[str, int] = Field(default_factory=dict)
     metrics: Dict[str, Dict[str, float]] = Field(default_factory=dict)

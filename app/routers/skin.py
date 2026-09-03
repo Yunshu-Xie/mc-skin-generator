@@ -25,8 +25,9 @@ router = APIRouter()
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 
-def _config() -> RenderConfig:
+def _config(scale: int | None = None) -> RenderConfig:
     return RenderConfig(
+        scale=scale if scale is not None else settings.skin_scale,
         palette_size=settings.palette_size,
         face_method=settings.face_method,  # type: ignore[arg-type]
         material_method=settings.material_method,  # type: ignore[arg-type]
@@ -56,10 +57,15 @@ async def generate_skin(
     model: str = Form("classic"),
     style_notes: str = Form(""),
     ai_model: str = Form(None),
+    scale: int = Form(None),
 ) -> SkinGenerateResponse:
     """Upload a photo and render a Minecraft skin from it."""
     if model not in ("classic", "slim"):
         raise HTTPException(400, "model must be 'classic' or 'slim'")
+
+    scale = scale or settings.skin_scale
+    if scale not in (1, 2):
+        raise HTTPException(400, "scale must be 1 (64x64) or 2 (128x128)")
 
     ai_model = ai_model or settings.gemini_default_model
     if ai_model not in ("flash", "flash-lite"):
@@ -87,7 +93,10 @@ async def generate_skin(
 
     # Stage 2 — the pixels, derived from the photo itself.
     try:
-        result = render(image_bytes, layout, model_type, _config())
+        result = render(image_bytes, layout, model_type, _config(scale))
+        # Vanilla Java only accepts 64x64, so a larger primary always ships
+        # with a 64x64 companion. Rendering twice costs no extra vision call.
+        vanilla = result if scale == 1 else render(image_bytes, layout, model_type, _config(1))
     except Exception as e:
         raise HTTPException(500, f"Skin rendering failed: {e}") from e
 
@@ -100,9 +109,10 @@ async def generate_skin(
     }
     skin_store.save(
         skin_id,
-        assemble_skin(result.pixel_data, model_type),
+        assemble_skin(result.pixel_data, model_type, result.scale),
         {
             "model": model,
+            "scale": result.scale,
             "pixel_data": result.pixel_data,
             "palette": result.palette,
             "roles": result.roles,
@@ -110,10 +120,14 @@ async def generate_skin(
             "metadata": metadata,
         },
     )
+    if scale != 1:
+        skin_store.save_companion(skin_id, assemble_skin(vanilla.pixel_data, model_type, 1))
 
     return SkinGenerateResponse(
         skin_id=skin_id,
         skin_url=f"/api/skin/{skin_id}.png",
+        vanilla_url=f"/api/skin/{skin_id}.png?vanilla=1" if scale != 1 else "",
+        scale=result.scale,
         model=model,
         palette=result.palette,
         roles=result.roles,
@@ -143,6 +157,7 @@ async def recolor_skin(skin_id: str, body: RecolorRequest) -> SkinGenerateRespon
 
     model = record.get("model", "classic")
     model_type: ModelType = "classic" if model == "classic" else "slim"
+    scale = int(record.get("scale", 1))
     palette = [
         body.new_color.upper() if c.upper() == body.old_color.upper() else c
         for c in record.get("palette", [])
@@ -151,13 +166,14 @@ async def recolor_skin(skin_id: str, body: RecolorRequest) -> SkinGenerateRespon
     new_id = uuid.uuid4().hex[:8]
     skin_store.save(
         new_id,
-        assemble_skin(pixel_data, model_type),
+        assemble_skin(pixel_data, model_type, scale),
         {**record, "pixel_data": pixel_data, "palette": palette},
     )
 
     return SkinGenerateResponse(
         skin_id=new_id,
         skin_url=f"/api/skin/{new_id}.png",
+        scale=scale,
         model=model,
         palette=palette,
         roles=record.get("roles", {}),
@@ -167,12 +183,12 @@ async def recolor_skin(skin_id: str, body: RecolorRequest) -> SkinGenerateRespon
 
 
 @router.get("/skin/{skin_id}.png")
-async def get_skin(skin_id: str) -> FileResponse:
-    """Download a generated skin PNG."""
+async def get_skin(skin_id: str, vanilla: int = 0) -> FileResponse:
+    """Download a generated skin PNG. ``?vanilla=1`` returns the 64x64 copy."""
     if not _valid_id(skin_id):
         raise HTTPException(400, "Invalid skin ID")
 
-    path = skin_store.png_path(skin_id)
+    path = skin_store.companion_path(skin_id) if vanilla else skin_store.png_path(skin_id)
     if not path.exists():
         raise HTTPException(404, "Skin not found")
 

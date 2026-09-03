@@ -86,6 +86,7 @@ def main() -> int:
     parser.add_argument("--ai", action="store_true", help="call the vision API")
     parser.add_argument("--face", type=_box, help="x0,y0,x1,y1 of the head")
     parser.add_argument("--eyes", type=_box, help="x0,y0,x1,y1 of the eye band")
+    parser.add_argument("--scale", type=int, default=2, choices=[1, 2])
     parser.add_argument("--out", type=Path, default=Path("comparison.png"))
     args = parser.parse_args()
 
@@ -110,15 +111,20 @@ def main() -> int:
     tiles = [source]
 
     for method in METHODS:
-        result = render(image_bytes, layout, "classic", RenderConfig(face_method=method))
+        result = render(
+            image_bytes,
+            layout,
+            "classic",
+            RenderConfig(face_method=method, scale=args.scale, head_mode="photo"),
+        )
         scores = result.metrics["head_front"]
         print(
             f"{method:<12}{scores['ssim']:>8.3f}{scores['delta_e_mean']:>10.3f}"
             f"{scores['delta_e_p95']:>9.3f}{scores['detail']:>9.3f}"
         )
-        tiles.append(_grid_image(result.pixel_data["head_front"]))
+        tiles.append(_grid_image(result.pixel_data["head_front"], ZOOM // args.scale))
         if method == "dpid":
-            skin = assemble_skin(result.pixel_data, "classic")
+            skin = assemble_skin(result.pixel_data, "classic", result.scale)
             tiles.append(skin.convert("RGB").resize((256, 256), Image.NEAREST))
 
     _contact_sheet(tiles, args.out)
