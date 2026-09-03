@@ -34,6 +34,8 @@ def _config() -> RenderConfig:
         dpid_lambda=settings.dpid_lambda,
         head_top_margin=settings.head_top_margin,
         head_side_margin=settings.head_side_margin,
+        head_mode=settings.head_mode,
+        face_modulation=settings.face_modulation,
     )
 
 

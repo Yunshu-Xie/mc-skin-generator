@@ -43,6 +43,7 @@ from app.imaging.color import (
 from app.imaging.downscale import Method, downscale, fit_crop
 from app.imaging.metrics import compare
 from app.imaging.quantize import Palette, assign, build_palette
+from app.services.face import eye_row_from_box, render_face
 from app.services.layout import Bbox, Layout
 from app.services.shading import (
     ORIENTATION_LIGHT,
@@ -134,6 +135,8 @@ class RenderConfig:
     eye_strength: float = EYE_STRENGTH
     head_top_margin: float = 0.45
     head_side_margin: float = 0.12
+    head_mode: str = "template"  # "template" draws the face; "photo" resamples it
+    face_modulation: float = 0.6
 
     def method_for(self, key: str) -> Method:
         return self.face_method if key in DETAIL_FACES else self.material_method
@@ -423,8 +426,26 @@ def render(
 
     faces, sources, used_boxes = _render_photo_faces(lin, layout, regions, config)
 
+    # ── the head front: drawn, not resampled (see app/services/face.py) ──
     eye_mask: np.ndarray | None = None
-    if "eyes" in layout.boxes and "head_front" in faces:
+    if config.head_mode == "template":
+        head_box = used_boxes.get("head_front")
+        eyes = layout.boxes.get("eyes")
+        eye_row = (
+            eye_row_from_box(head_box.y0, head_box.y1, eyes.y0, eyes.y1)
+            if head_box is not None and eyes is not None
+            else 3
+        )
+        faces["head_front"] = render_face(
+            style=layout.hair_style,
+            eye_row=eye_row,
+            skin=hex_to_linear(layout.role("skin_tone")),
+            hair=hex_to_linear(layout.role("hair_color")),
+            eye=hex_to_linear(layout.role("eye_color")),
+            photo=faces.get("head_front"),
+            modulation=config.face_modulation,
+        )
+    elif "eyes" in layout.boxes and "head_front" in faces:
         faces["head_front"], eye_mask = stamp_eyes(
             faces["head_front"],
             used_boxes["head_front"],

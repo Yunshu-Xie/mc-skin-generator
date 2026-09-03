@@ -59,6 +59,11 @@ ROLES = (
 )
 REQUIRED_ROLES = ("skin_tone", "hair_color")
 
+# Which face template to draw. A coarse class is all the head needs — and all
+# a model can report reliably.
+HAIR_STYLES = ("short", "long", "fringe", "bald", "hat", "helmet")
+DEFAULT_HAIR_STYLE = "short"
+
 # Used when the model omits an anchor, and for the offline fallback. Values
 # are (x0, y0, x1, y1) as fractions of the image — a generic head-and-torso
 # portrait framing.
@@ -107,6 +112,7 @@ class Layout:
     description: str = ""
     boxes: dict[str, Bbox] = field(default_factory=dict)
     roles: dict[str, str] = field(default_factory=dict)
+    hair_style: str = DEFAULT_HAIR_STYLE
     ai_model: str = ""
     source: Literal["vision", "fallback"] = "vision"
 
@@ -147,6 +153,7 @@ they are. Do not draw anything.
     "left_arm":  [x0, y0, x1, y1],
     "legs":      [x0, y0, x1, y1]
   },
+  "hair_style": "short | long | fringe | bald | hat",
   "roles": {
     "skin_tone": "#RRGGBB", "hair_color": "#RRGGBB", "eye_color": "#RRGGBB",
     "shirt_main": "#RRGGBB", "arm_main": "#RRGGBB",
@@ -165,6 +172,9 @@ the eyes are one or two pixels and would otherwise be averaged away, so this \
 box is what makes the face readable — get it right even if you skip others.
 - "right_arm"/"left_arm" are the subject's own right/left (mirrored on screen).
 - Omit any box you cannot see in the photo rather than guessing.
+- "hair_style": "fringe" if hair covers the forehead, "long" if it falls past \
+the ears on both sides, "short" otherwise; "hat" for a cap/hood/helmet, \
+"bald" only if there is no hair at all.
 - Colors are the dominant color of that material as it appears in the photo, \
 in normal lighting — not in shadow, not blown out.
 - Every hex value is exactly 7 characters."""
@@ -243,10 +253,12 @@ def parse_layout(data: dict[str, Any]) -> tuple[Layout, bool]:
         if parsed_hex is not None:
             roles[name] = parsed_hex
 
+    style = str(data.get("hair_style", "")).strip().lower()
     layout = Layout(
         description=str(data.get("description", ""))[:280],
         boxes=boxes,
         roles=roles,
+        hair_style=style if style in HAIR_STYLES else DEFAULT_HAIR_STYLE,
     )
     complete = all(a in boxes for a in REQUIRED_ANCHORS) and all(r in roles for r in REQUIRED_ROLES)
     return layout, complete

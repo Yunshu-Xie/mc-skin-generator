@@ -106,12 +106,12 @@ def test_downscale_method_is_chosen_per_face():
 
 
 def test_eye_band_lands_on_the_eyes_and_uses_the_eye_color(portrait_bytes):
-    """Ground truth: the fixture's eyes are at known coordinates."""
+    """The legacy resampling path: ground truth eyes at known coordinates."""
     layout = default_layout()
     layout.boxes["eyes"] = Bbox(0.385, 0.210, 0.615, 0.250)
     layout.roles["eye_color"] = "#101820"
 
-    result = render(portrait_bytes, layout, "classic")
+    result = render(portrait_bytes, layout, "classic", RenderConfig(head_mode="photo"))
     head = result.pixel_data["head_front"]
     eye_hex = result.palette[result.roles["eye_color"]]
 
@@ -128,15 +128,19 @@ def test_eye_band_is_skipped_when_no_eyes_box_is_reported(portrait_bytes):
     layout.boxes.pop("eyes", None)
     layout.roles["eye_color"] = "#101820"
 
-    head = render(portrait_bytes, layout, "classic").pixel_data["head_front"]
+    head = render(
+        portrait_bytes, layout, "classic", RenderConfig(head_mode="photo")
+    ).pixel_data["head_front"]
     assert not any("#101820" == v for row in head for v in row)
 
 
 def test_eye_strength_zero_disables_the_override(portrait_bytes):
     layout = default_layout()
     layout.boxes["eyes"] = Bbox(0.385, 0.210, 0.615, 0.250)
-    with_eyes = render(portrait_bytes, layout, "classic", RenderConfig())
-    without = render(portrait_bytes, layout, "classic", RenderConfig(eye_strength=0.0))
+    with_eyes = render(portrait_bytes, layout, "classic", RenderConfig(head_mode="photo"))
+    without = render(
+        portrait_bytes, layout, "classic", RenderConfig(head_mode="photo", eye_strength=0.0)
+    )
     assert with_eyes.pixel_data["head_front"] != without.pixel_data["head_front"]
 
 
@@ -186,7 +190,9 @@ def test_head_margin_shifts_the_face_down_the_texture(portrait_bytes):
             portrait_bytes,
             layout,
             "classic",
-            RenderConfig(head_top_margin=margin, head_side_margin=0.0),
+            RenderConfig(
+                head_mode="photo", head_top_margin=margin, head_side_margin=0.0
+            ),
         )
         eye_hex = result.palette[result.roles["eye_color"]]
         head = result.pixel_data["head_front"]

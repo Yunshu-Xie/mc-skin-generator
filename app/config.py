@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # Vision models report face boxes, not head boxes; grow one into the other.
     head_top_margin: float = 0.45
     head_side_margin: float = 0.12
+    # "template" draws the head front from a face template coloured by the
+    # photo; "photo" resamples the photo directly (the old, unreadable path).
+    head_mode: str = "template"
+    face_modulation: float = 0.6
 
     # ── Storage ───────────────────────────────────────────────────────
     skins_dir: str = "skins"
