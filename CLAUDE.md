@@ -53,6 +53,7 @@ ruff check . && ruff format .
 - **`color.py`** — sRGB ↔ **线性光** ↔ **OKLab**，ΔE，hex 边界转换。这一层之后没有任何代码在 sRGB 数值上做平均——在编码值上求平均没有数学意义，这是最经典的降采样 bug
 - **`downscale.py`** — `box`（精确面积平均）、`dpid`（离本格均值越远权重越大，OKLab 距离）、`dominant`（众数色）；`unsharp` 预锐化补偿 16× 缩小的 MTF 损失；`fit_crop` 裁剪而非拉伸
 - **`quantize.py`** — OKLab 里的加权 k-means（k-means++ 初始化，支持固定中心）；`Palette` 的前若干槽是**锚定的语义角色**，永不被优化器移动
+- **`albedo.py`** — Retinex 近似去阴影：光照是低频的，模糊 OKLab 的 L 得到光照场再减掉。贴图要的是材质本色，不是材质 × 光
 - **`metrics.py`** — SSIM（算在 OKLab 的 L 通道上）、ΔE、`detail`。**这些指标都是面积加权的，没有一个能判断"眼睛还在不在"**，见 ARCHITECTURE §7
 
 ### `app/services/layout.py` —— AI 层（语义，不产像素）
@@ -80,6 +81,7 @@ ruff check . && ruff format .
 ## Key Design Decisions
 
 - **AI 不画像素**：语言模型没有像素级空间精度。这是整个重构的前提
+- **贴图存 albedo，不存阴影**：去阴影 + 调色板按材质而非明度聚类 + 取簇的高分位明度；朝向明暗不烘进贴图，交给游戏
 - **一切在线性光 / OKLab 里做**：不在 sRGB 上平均，不用 HSV 表示明度
 - **按内容选降采样方法**：衣服四肢要色块干净（`dominant`）；`dpid` 仍用于 `head_top`
 - **该采样的采样，该绘制的绘制**：身体从照片采样，头部由模板绘制。管线的每一层都值得问一次这个问题

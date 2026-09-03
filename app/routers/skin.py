@@ -36,6 +36,10 @@ def _config() -> RenderConfig:
         head_side_margin=settings.head_side_margin,
         head_mode=settings.head_mode,
         face_modulation=settings.face_modulation,
+        flatten_shading=settings.flatten_shading,
+        palette_lightness_weight=settings.palette_lightness_weight,
+        albedo_percentile=settings.albedo_percentile,
+        bake_orientation_shading=settings.bake_orientation_shading,
     )
 
 

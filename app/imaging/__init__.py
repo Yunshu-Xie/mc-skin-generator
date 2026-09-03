@@ -7,6 +7,7 @@ reviewable: if a color came out wrong, it is either a bug in here (provable
 with a unit test) or a bad decision up there (visible in a rendering).
 """
 
+from app.imaging.albedo import remove_shading
 from app.imaging.color import (
     delta_e_ok,
     hex_to_linear,
@@ -24,6 +25,7 @@ from app.imaging.quantize import Palette, assign, build_palette, kmeans_oklab
 
 __all__ = [
     "Palette",
+    "remove_shading",
     "assign",
     "build_palette",
     "compare",

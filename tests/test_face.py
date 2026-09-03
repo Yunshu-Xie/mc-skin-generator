@@ -68,9 +68,7 @@ def test_eyes_are_the_darkest_thing_in_the_face():
     lightness = _lightness(face)
     template = build_template("short", 3)
     eyes = [lightness[r][c] for r in range(8) for c in range(8) if template[r][c] == EYE]
-    others = [
-        lightness[r][c] for r in range(8) for c in range(8) if template[r][c] != EYE
-    ]
+    others = [lightness[r][c] for r in range(8) for c in range(8) if template[r][c] != EYE]
     assert max(eyes) < min(others)
 
 
@@ -97,7 +95,5 @@ def test_photo_modulation_adds_variation_but_not_structure():
 
 
 def test_a_mismatched_photo_grid_is_ignored():
-    face = render_face(
-        "short", 3, SKIN_C, HAIR_C, EYE_C, photo=np.zeros((4, 4, 3), np.float32)
-    )
+    face = render_face("short", 3, SKIN_C, HAIR_C, EYE_C, photo=np.zeros((4, 4, 3), np.float32))
     assert face.shape == (8, 8, 3)

@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from PIL import Image
 
+from app.imaging.albedo import remove_shading
 from app.imaging.color import (
     hex_to_linear,
     linear_to_hex,
@@ -137,6 +138,27 @@ class RenderConfig:
     head_side_margin: float = 0.12
     head_mode: str = "template"  # "template" draws the face; "photo" resamples it
     face_modulation: float = 0.6
+
+    # ── albedo: a photo is material × light, a skin texture wants material ──
+    # How much of each region's illumination gradient to flatten before
+    # quantizing (0 keeps the photo's shading). 1.0, not something gentler:
+    # measured on a white dress with a red trim, partial flattening (0.85) was
+    # the *worst* of both — a residual gradient still ate a palette slot while
+    # the trim's lightness got pulled toward the mean, and the accent color
+    # vanished entirely. Removing the shading outright frees that slot for a
+    # real material, and the trim came back.
+    flatten_shading: float = 1.0
+    # How much the OKLab L axis counts when clustering. Below 1, a garment in
+    # sun and in shade fall into one palette slot instead of two. Only bites on
+    # materials that have chroma to cluster on: for a near-white garment there
+    # is no hue signal and flatten_shading does all the work.
+    palette_lightness_weight: float = 0.7
+    # Which percentile of a cluster's lightness becomes its color: the material
+    # as it looks lit, not an average dragged dark by its own shadow.
+    albedo_percentile: float = 80.0
+    # How much orientation shading to bake into procedurally generated faces.
+    # 0 by default — the game does its own lighting.
+    bake_orientation_shading: float = 0.0
 
     def method_for(self, key: str) -> Method:
         return self.face_method if key in DETAIL_FACES else self.material_method
@@ -266,6 +288,7 @@ def _render_photo_faces(
             continue
         used[key] = box
         crop = fit_crop(crop, rect.h, rect.w)  # no-op unless expansion hit an edge
+        crop = remove_shading(crop, config.flatten_shading)
         faces[key] = downscale(
             crop,
             rect.h,
@@ -284,6 +307,7 @@ def _derive_head_faces(
     regions: dict[str, dict],
     palette_hair: np.ndarray,
     palette_skin: np.ndarray,
+    bake: float = 0.0,
 ) -> None:
     """Fill in head sides, back and underside from the rendered front face."""
     front = faces.get("head_front")
@@ -295,21 +319,23 @@ def _derive_head_faces(
             side = _tile_column(front, col % front.shape[1], rect.w)
         else:
             side = solid_face(rect.h, rect.w, palette_hair)
-        faces[f"head_{face}"] = _shade_grid(side, face)
+        faces[f"head_{face}"] = _shade_grid(side, face, bake)
 
     rect = head["back"]
     back = solid_face(rect.h, rect.w, palette_hair)
     if front is not None and rect.h > 1:
         back[-1, :, :] = front[-1, :, :]  # keep the neck continuous
-    faces["head_back"] = _shade_grid(back, "back")
+    faces["head_back"] = _shade_grid(back, "back", bake)
 
     rect = head["bottom"]
-    faces["head_bottom"] = shaded_face(rect.h, rect.w, palette_skin, "bottom")
+    faces["head_bottom"] = shaded_face(rect.h, rect.w, palette_skin, "bottom", strength=bake)
 
 
-def _shade_grid(grid: np.ndarray, orientation: str) -> np.ndarray:
+def _shade_grid(grid: np.ndarray, orientation: str, strength: float = 1.0) -> np.ndarray:
     """Apply a face's orientation lighting to an already-textured grid."""
-    return shift_lightness(grid, ORIENTATION_LIGHT.get(orientation, 0.0))
+    if strength <= 0:
+        return grid
+    return shift_lightness(grid, ORIENTATION_LIGHT.get(orientation, 0.0) * strength)
 
 
 def stamp_eyes(
@@ -392,7 +418,10 @@ def stamp_eyes(
 
 
 def _render_procedural_faces(
-    faces: dict[str, np.ndarray], regions: dict[str, dict], palette: Palette
+    faces: dict[str, np.ndarray],
+    regions: dict[str, dict],
+    palette: Palette,
+    bake: float = 0.0,
 ) -> None:
     """Everything still missing gets a shaded fill from the shared palette."""
     shoe = palette.color_of("shoe_color", palette.color_of("pants_main"))
@@ -408,7 +437,7 @@ def _render_procedural_faces(
             if group.endswith("_leg") and face == "bottom":
                 faces[key] = solid_face(rect.h, rect.w, shoe)
             else:
-                faces[key] = shaded_face(rect.h, rect.w, base, face)
+                faces[key] = shaded_face(rect.h, rect.w, base, face, strength=bake)
 
 
 def render(
@@ -479,9 +508,13 @@ def render(
 
     # ── faces the photo cannot show ───────────────────────────────────
     _derive_head_faces(
-        faces, regions, palette.color_of("hair_color"), palette.color_of("skin_tone")
+        faces,
+        regions,
+        palette.color_of("hair_color"),
+        palette.color_of("skin_tone"),
+        config.bake_orientation_shading,
     )
-    _render_procedural_faces(faces, regions, palette)
+    _render_procedural_faces(faces, regions, palette, config.bake_orientation_shading)
 
     # ── quantize everything to the shared palette ─────────────────────
     palette_hex = palette.hex_list()

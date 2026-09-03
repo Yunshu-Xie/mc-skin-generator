@@ -58,9 +58,16 @@ def shaded_face(
     base: np.ndarray,
     orientation: str,
     gradient: float = VERTICAL_GRADIENT,
+    strength: float = 1.0,
 ) -> np.ndarray:
-    """A face lit for its orientation, with a soft top-to-bottom falloff."""
-    offset = ORIENTATION_LIGHT.get(orientation, 0.0)
+    """A face lit for its orientation, with a soft top-to-bottom falloff.
+
+    ``strength`` 0 paints the flat material color instead. That is the right
+    default when the goal is an albedo texture: the game lights the model
+    itself, so shading baked in here is shading applied twice.
+    """
+    offset = ORIENTATION_LIGHT.get(orientation, 0.0) * strength
+    gradient = gradient * strength
     if height > 1:
         ramp = np.linspace(gradient / 2.0, -gradient / 2.0, height, dtype=np.float32)
     else:

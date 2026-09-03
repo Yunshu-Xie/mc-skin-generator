@@ -111,7 +111,14 @@ def test_eye_band_lands_on_the_eyes_and_uses_the_eye_color(portrait_bytes):
     layout.boxes["eyes"] = Bbox(0.385, 0.210, 0.615, 0.250)
     layout.roles["eye_color"] = "#101820"
 
-    result = render(portrait_bytes, layout, "classic", RenderConfig(head_mode="photo"))
+    # Pinned to the metric this path was written for: no shading flattening and
+    # no lightness weighting, so the eye cells are the darkest thing around.
+    result = render(
+        portrait_bytes,
+        layout,
+        "classic",
+        RenderConfig(head_mode="photo", flatten_shading=0.0, palette_lightness_weight=1.0),
+    )
     head = result.pixel_data["head_front"]
     eye_hex = result.palette[result.roles["eye_color"]]
 
@@ -124,14 +131,24 @@ def test_eye_band_lands_on_the_eyes_and_uses_the_eye_color(portrait_bytes):
 
 
 def test_eye_band_is_skipped_when_no_eyes_box_is_reported(portrait_bytes):
+    """No eyes box, no override — the render matches one with the stamp off.
+
+    Asserting "the eye color never appears" would be wrong: eye_color holds an
+    anchored palette slot, so an unrelated dark pixel may legitimately quantize
+    to it. What must hold is that the stamp itself did nothing.
+    """
     layout = default_layout()
     layout.boxes.pop("eyes", None)
     layout.roles["eye_color"] = "#101820"
 
-    head = render(
-        portrait_bytes, layout, "classic", RenderConfig(head_mode="photo")
-    ).pixel_data["head_front"]
-    assert not any("#101820" == v for row in head for v in row)
+    stamped = render(portrait_bytes, layout, "classic", RenderConfig(head_mode="photo"))
+    unstamped = render(
+        portrait_bytes,
+        layout,
+        "classic",
+        RenderConfig(head_mode="photo", eye_strength=0.0),
+    )
+    assert stamped.pixel_data["head_front"] == unstamped.pixel_data["head_front"]
 
 
 def test_eye_strength_zero_disables_the_override(portrait_bytes):
@@ -190,9 +207,7 @@ def test_head_margin_shifts_the_face_down_the_texture(portrait_bytes):
             portrait_bytes,
             layout,
             "classic",
-            RenderConfig(
-                head_mode="photo", head_top_margin=margin, head_side_margin=0.0
-            ),
+            RenderConfig(head_mode="photo", head_top_margin=margin, head_side_margin=0.0),
         )
         eye_hex = result.palette[result.roles["eye_color"]]
         head = result.pixel_data["head_front"]

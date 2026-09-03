@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # photo; "photo" resamples the photo directly (the old, unreadable path).
     head_mode: str = "template"
     face_modulation: float = 0.6
+    # Albedo: strip the photo's lighting so the texture is the material itself.
+    flatten_shading: float = 1.0
+    palette_lightness_weight: float = 0.7
+    albedo_percentile: float = 80.0
+    bake_orientation_shading: float = 0.0
 
     # ── Storage ───────────────────────────────────────────────────────
     skins_dir: str = "skins"

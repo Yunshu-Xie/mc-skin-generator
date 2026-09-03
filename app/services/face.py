@@ -84,9 +84,7 @@ def build_template(style: str, eye_row: int = 3) -> list[list[str]]:
     return grid
 
 
-def eye_row_from_box(
-    face_y0: float, face_y1: float, eyes_y0: float, eyes_y1: float
-) -> int:
+def eye_row_from_box(face_y0: float, face_y1: float, eyes_y0: float, eyes_y1: float) -> int:
     """Which of the 8 rows the reported eye band falls in."""
     span = face_y1 - face_y0
     if span <= 0:
@@ -131,9 +129,9 @@ def render_face(
         MOUTH: _warm(shift_lightness(skin, -MOUTH_DARKEN), MOUTH_WARMTH),
     }
 
-    out = np.stack(
-        [np.stack([palette[code] for code in row]) for row in template]
-    ).astype(np.float32)
+    out = np.stack([np.stack([palette[code] for code in row]) for row in template]).astype(
+        np.float32
+    )
 
     if photo is None or modulation <= 0 or photo.shape[:2] != (8, 8):
         return out
@@ -143,9 +141,7 @@ def render_face(
     # photo split them into two near-identical shades gets one of the pair
     # quantized away into the surrounding skin.
     for code in (HAIR, SKIN, SCLERA):
-        cells = [
-            (r, c) for r in range(8) for c in range(8) if template[r][c] == code
-        ]
+        cells = [(r, c) for r in range(8) for c in range(8) if template[r][c] == code]
         if not cells:
             continue
         mean = float(np.mean([lightness[r, c] for r, c in cells]))

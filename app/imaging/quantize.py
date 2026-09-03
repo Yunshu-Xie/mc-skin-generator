@@ -13,6 +13,15 @@ separately lets the same forearm drift to a different shade on the arm and on
 the hand. A single weighted pass over every region keeps materials consistent.
 Weights let the face carry more influence than a trouser leg.
 
+Two further knobs exist because a photograph is albedo × illumination and a
+skin texture wants albedo. ``lightness_weight`` shrinks the OKLab L axis
+before clustering, so a garment in sun and the same garment in shade land in
+one cluster instead of two — without it, half the palette goes to shadows.
+``albedo_percentile`` then picks each cluster's representative *lightness*
+from the bright end of its members rather than their mean, which is the
+material as it looks in the light rather than an average dragged dark by its
+own shadow. Chromaticity still comes from the mean.
+
 Some palette slots are *anchored*: the semantic colors the vision model
 reports (skin, hair, eyes, shirt…) occupy fixed indices and are never moved by
 the optimizer. That keeps a stable handle for later recoloring — swap the hex
@@ -31,12 +40,22 @@ from app.imaging.color import linear_to_hex, linear_to_oklab, oklab_to_linear
 __all__ = ["Palette", "kmeans_oklab", "build_palette", "assign"]
 
 
+def _scale_lightness(lab: np.ndarray, weight: float) -> np.ndarray:
+    """Shrink the OKLab L axis so distance is dominated by chromaticity."""
+    if weight == 1.0:
+        return lab
+    out = np.array(lab, dtype=np.float32, copy=True)
+    out[..., 0] *= weight
+    return out
+
+
 @dataclass
 class Palette:
     """A fixed set of colors, some of which carry a semantic role."""
 
     linear: np.ndarray  # (k, 3) linear-light RGB
     roles: dict[str, int] = field(default_factory=dict)
+    lightness_weight: float = 1.0  # the metric this palette was built under
 
     @property
     def lab(self) -> np.ndarray:
@@ -87,12 +106,17 @@ def kmeans_oklab(
     fixed: np.ndarray | None = None,
     iters: int = 32,
     seed: int = 0,
+    lightness_weight: float = 1.0,
+    albedo_percentile: float | None = None,
 ) -> np.ndarray:
     """Weighted Lloyd's algorithm in OKLab.
 
     ``fixed`` centers participate in assignment but are never moved, so
     anchored roles stay exactly on the color the vision model reported.
-    Returns the free centers only, shape (k, 3).
+    ``lightness_weight`` shrinks the L axis for the distance metric only.
+    ``albedo_percentile``, when given, replaces each center's lightness with
+    that percentile of its members' lightness once the clustering has settled.
+    Returns the free centers only, shape (k, 3), in unscaled OKLab.
     """
     if k <= 0:
         return np.zeros((0, 3), dtype=np.float32)
@@ -108,27 +132,39 @@ def kmeans_oklab(
 
     k = min(k, lab.shape[0])
     rng = np.random.default_rng(seed)
-    free = _kmeanspp_init(lab, k, weights, rng)
+
+    # Everything below runs in the scaled space; centers are unscaled at the end.
+    scaled = _scale_lightness(lab, lightness_weight)
+    fixed_scaled = _scale_lightness(fixed, lightness_weight)
+    free = _kmeanspp_init(scaled, k, weights, rng)
+    labels = np.zeros(scaled.shape[0], dtype=np.intp)
 
     for _ in range(iters):
-        centers = np.concatenate([fixed, free], axis=0)
-        d2 = np.sum((lab[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+        centers = np.concatenate([fixed_scaled, free], axis=0)
+        d2 = np.sum((scaled[:, None, :] - centers[None, :, :]) ** 2, axis=2)
         labels = np.argmin(d2, axis=1)
         moved = 0.0
         for j in range(k):
             member = labels == (len(fixed) + j)
             if not member.any():
                 # Empty cluster: re-seed it on the worst-represented sample.
-                worst = int(np.argmax(d2[np.arange(len(lab)), labels] * weights))
-                new = lab[worst]
+                worst = int(np.argmax(d2[np.arange(len(scaled)), labels] * weights))
+                new = scaled[worst]
             else:
                 w = weights[member][:, None]
-                new = (lab[member] * w).sum(axis=0) / max(w.sum(), 1e-8)
+                new = (scaled[member] * w).sum(axis=0) / max(w.sum(), 1e-8)
             moved = max(moved, float(np.linalg.norm(new - free[j])))
             free[j] = new
         if moved < 1e-4:
             break
-    return free.astype(np.float32)
+
+    out = _scale_lightness(free, 1.0 / lightness_weight if lightness_weight else 1.0)
+    if albedo_percentile is not None:
+        for j in range(k):
+            member = labels == (len(fixed_scaled) + j)
+            if member.any():
+                out[j, 0] = float(np.percentile(lab[member][:, 0], albedo_percentile))
+    return out.astype(np.float32)
 
 
 def build_palette(
@@ -137,6 +173,8 @@ def build_palette(
     weights: np.ndarray | None = None,
     anchors: dict[str, np.ndarray] | None = None,
     seed: int = 0,
+    lightness_weight: float = 1.0,
+    albedo_percentile: float | None = None,
 ) -> Palette:
     """Build one palette of ``size`` colors covering all given samples.
 
@@ -154,7 +192,7 @@ def build_palette(
     samples_lin = np.asarray(samples_lin, dtype=np.float32).reshape(-1, 3)
     free_count = max(0, size - len(anchors))
     if samples_lin.size == 0 or free_count == 0:
-        return Palette(linear=anchor_lin, roles=roles)
+        return Palette(linear=anchor_lin, roles=roles, lightness_weight=lightness_weight)
 
     free_lab = kmeans_oklab(
         linear_to_oklab(samples_lin),
@@ -162,16 +200,26 @@ def build_palette(
         weights=weights,
         fixed=linear_to_oklab(anchor_lin) if len(anchor_lin) else None,
         seed=seed,
+        lightness_weight=lightness_weight,
+        albedo_percentile=albedo_percentile,
     )
     return Palette(
         linear=np.concatenate([anchor_lin, oklab_to_linear(free_lab)], axis=0),
         roles=roles,
+        lightness_weight=lightness_weight,
     )
 
 
 def assign(grid_lin: np.ndarray, palette: Palette) -> np.ndarray:
-    """Map an (H, W, 3) linear grid to (H, W) palette indices, nearest in OKLab."""
+    """Map an (H, W, 3) linear grid to (H, W) palette indices, nearest in OKLab.
+
+    Uses the same lightness weighting the palette was built with — otherwise a
+    shadowed pixel would be matched to a darker slot than the one its cluster
+    was formed around, undoing the whole point of the weighting.
+    """
     h, w = grid_lin.shape[:2]
-    lab = linear_to_oklab(grid_lin).reshape(-1, 3)
-    d2 = np.sum((lab[:, None, :] - palette.lab[None, :, :]) ** 2, axis=2)
+    weight = palette.lightness_weight
+    lab = _scale_lightness(linear_to_oklab(grid_lin).reshape(-1, 3), weight)
+    centers = _scale_lightness(palette.lab, weight)
+    d2 = np.sum((lab[:, None, :] - centers[None, :, :]) ** 2, axis=2)
     return np.argmin(d2, axis=1).reshape(h, w).astype(np.int32)
