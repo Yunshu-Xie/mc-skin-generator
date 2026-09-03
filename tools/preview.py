@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -89,7 +90,15 @@ def main() -> int:
         layout.boxes["eyes"] = args.eyes
 
     result = render(image_bytes, layout, args.model, RenderConfig())
+
     print(f"layout   : {layout.source}  {layout.description}")
+    for name in sorted(layout.boxes):
+        box = layout.boxes[name]
+        print(
+            f"  {name:<10} {box.x0:.3f},{box.y0:.3f},{box.x1:.3f},{box.y1:.3f}"
+            f"   ({box.x1 - box.x0:.2f} x {box.y1 - box.y0:.2f})"
+        )
+    print(f"roles    : {layout.roles or '(defaults)'}")
     print(f"palette  : {' '.join(result.palette)}")
     for name, scores in result.metrics.items():
         print(
@@ -114,7 +123,26 @@ def main() -> int:
     sheet.save(args.out)
 
     texture.save(args.out.with_name(args.out.stem + "_skin.png"))
-    print(f"wrote {args.out} and {args.out.with_name(args.out.stem + '_skin.png')}")
+
+    # Persist the layout: a bad render is almost always a bad box, and without
+    # this the only way to find out is to spend another API call.
+    layout_path = args.out.with_name(args.out.stem + "_layout.json")
+    layout_path.write_text(
+        json.dumps(
+            {
+                "source": layout.source,
+                "description": layout.description,
+                "boxes": {k: [v.x0, v.y0, v.x1, v.y1] for k, v in layout.boxes.items()},
+                "roles": layout.roles,
+                "palette": result.palette,
+                "metrics": result.metrics,
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    print(f"wrote {args.out}, {args.out.with_name(args.out.stem + '_skin.png')}, {layout_path}")
     return 0
 
 

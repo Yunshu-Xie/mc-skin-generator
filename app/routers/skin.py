@@ -32,6 +32,8 @@ def _config() -> RenderConfig:
         material_method=settings.material_method,  # type: ignore[arg-type]
         presharpen=settings.presharpen,
         dpid_lambda=settings.dpid_lambda,
+        head_top_margin=settings.head_top_margin,
+        head_side_margin=settings.head_side_margin,
     )
 
 

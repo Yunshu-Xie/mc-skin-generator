@@ -157,9 +157,9 @@ they are. Do not draw anything.
 Rules:
 - Coordinates are fractions of the image, 0.0-1.0, origin at top-left, \
 x0 < x1 and y0 < y1.
-- "face" must frame the whole head, hairline to chin — it becomes the 8x8 \
-front of the skin's head, so a loose box wastes precious pixels and a tight \
-one cuts the hair off.
+- "face" must frame the WHOLE HEAD, not the face: the top edge goes ABOVE the \
+topmost hair, not at the forehead or eyebrows, and the bottom edge at the \
+chin. A box that starts at the forehead produces a bald character.
 - "eyes" is a thin band covering both eyes (and eyebrows if visible). At 8x8 \
 the eyes are one or two pixels and would otherwise be averaged away, so this \
 box is what makes the face readable — get it right even if you skip others.

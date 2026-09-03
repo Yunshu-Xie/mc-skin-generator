@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from app.imaging.color import hex_to_linear, linear_to_oklab
 from app.services.layout import Bbox, default_layout
 from app.services.renderer import (
     ANCHORED_ROLES,
     RenderConfig,
+    expand_head_box,
     expand_to_aspect,
     recolor,
     render,
@@ -148,3 +151,45 @@ def test_expand_to_aspect_stays_inside_the_image():
     edge = Bbox(0.0, 0.1, 0.15, 0.6)
     grown = expand_to_aspect(edge, 8, 8)
     assert grown.x0 >= 0.0 and grown.x1 <= 1.0
+
+
+def test_expand_head_box_grows_upward_for_hair():
+    """A detector's face box is eyebrows-to-chin; a head texture needs the crown."""
+    face = Bbox(0.40, 0.09, 0.63, 0.26)
+    head = expand_head_box(face, 0.45, 0.12)
+
+    assert head.y1 == face.y1, "the chin edge must not move"
+    assert head.y0 < face.y0
+    assert (face.y0 - head.y0) == pytest.approx((face.y1 - face.y0) * 0.45)
+    assert head.x0 < face.x0 and head.x1 > face.x1
+
+
+def test_expand_head_box_clamps_to_the_image():
+    face = Bbox(0.02, 0.02, 0.30, 0.40)
+    head = expand_head_box(face, 0.45, 0.12)
+    assert head.x0 >= 0.0 and head.y0 >= 0.0 and head.x1 <= 1.0
+
+
+def test_expand_head_box_is_a_no_op_at_zero():
+    face = Bbox(0.4, 0.1, 0.6, 0.3)
+    assert expand_head_box(face, 0.0, 0.0) == face
+
+
+def test_head_margin_shifts_the_face_down_the_texture(portrait_bytes):
+    """With the crown included, the same features land lower in the 8 rows."""
+    layout = default_layout()
+    layout.boxes["eyes"] = Bbox(0.385, 0.210, 0.615, 0.250)
+    layout.roles["eye_color"] = "#101820"
+
+    def eye_rows(margin: float) -> set[int]:
+        result = render(
+            portrait_bytes,
+            layout,
+            "classic",
+            RenderConfig(head_top_margin=margin, head_side_margin=0.0),
+        )
+        eye_hex = result.palette[result.roles["eye_color"]]
+        head = result.pixel_data["head_front"]
+        return {r for r, row in enumerate(head) for v in row if v == eye_hex}
+
+    assert min(eye_rows(0.45), default=99) > min(eye_rows(0.0), default=0)

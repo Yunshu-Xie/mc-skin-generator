@@ -132,6 +132,8 @@ class RenderConfig:
     presharpen: float = 0.45
     dpid_lambda: float = 1.4
     eye_strength: float = EYE_STRENGTH
+    head_top_margin: float = 0.45
+    head_side_margin: float = 0.12
 
     def method_for(self, key: str) -> Method:
         return self.face_method if key in DETAIL_FACES else self.material_method
@@ -150,6 +152,33 @@ def _split_box(box: Bbox, half: str) -> Bbox:
     mid = (box.x0 + box.x1) / 2.0
     return (
         Bbox(box.x0, box.y0, mid, box.y1) if half == "left" else Bbox(mid, box.y0, box.x1, box.y1)
+    )
+
+
+def expand_head_box(box: Bbox, top: float, side: float) -> Bbox:
+    """Grow a reported face box outward to cover the whole head.
+
+    Vision models report a *face* box — roughly eyebrows to chin — because
+    that is what "face" means to a detector, and no amount of asking for "the
+    whole head, hairline to chin" reliably changes it. Feeding that box
+    straight into an 8x8 head texture produces a bald mannequin: measured on a
+    real run, the eyes landed in row 2 of 8 and not a single cell of hair made
+    it into the texture. The head sides and back are derived from this face,
+    so the hair then disappears from the entire head.
+
+    Anatomically a face box spans roughly the lower 60% of a head, so growing
+    the top edge by ~0.45 of the box height recovers the crown; the sides get
+    a smaller margin because hair is only a little wider than the face.
+    Clamped to the image, and skipped entirely when both margins are 0.
+    """
+    if top <= 0 and side <= 0:
+        return box
+    height, width = box.y1 - box.y0, box.x1 - box.x0
+    return Bbox(
+        max(0.0, box.x0 - width * side),
+        max(0.0, box.y0 - height * top),
+        min(1.0, box.x1 + width * side),
+        box.y1,
     )
 
 
@@ -223,6 +252,8 @@ def _render_photo_faces(
         group, face = key.rsplit("_", 1)
         rect = regions[group][face]
         box = layout.box(anchor)
+        if anchor == "face":
+            box = expand_head_box(box, config.head_top_margin, config.head_side_margin)
         if anchor == "legs":
             box = _split_box(box, "left" if group == "right_leg" else "right")
 

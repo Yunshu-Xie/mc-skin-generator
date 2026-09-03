@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     material_method: str = "dominant"
     presharpen: float = 0.45
     dpid_lambda: float = 1.4
+    # Vision models report face boxes, not head boxes; grow one into the other.
+    head_top_margin: float = 0.45
+    head_side_margin: float = 0.12
 
     # ── Storage ───────────────────────────────────────────────────────
     skins_dir: str = "skins"
