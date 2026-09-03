@@ -197,20 +197,43 @@ def test_expand_head_box_is_a_no_op_at_zero():
 
 
 def test_head_margin_shifts_the_face_down_the_texture(portrait_bytes):
-    """With the crown included, the same features land lower in the 8 rows."""
-    layout = default_layout()
-    layout.boxes["eyes"] = Bbox(0.385, 0.210, 0.615, 0.250)
-    layout.roles["eye_color"] = "#101820"
+    """With the crown included, the same features land lower in the 8 rows.
 
-    def eye_rows(margin: float) -> set[int]:
-        result = render(
+    Measured on the darkest row — the hair band — rather than on the eyes: a
+    one-row shift can leave the eye row unchanged through rounding alone, but
+    the hairline moving down is the whole point of the margin.
+    """
+    layout = default_layout()
+
+    def darkest_row(margin: float) -> int:
+        head = render(
             portrait_bytes,
             layout,
             "classic",
             RenderConfig(head_mode="photo", head_top_margin=margin, head_side_margin=0.0),
-        )
-        eye_hex = result.palette[result.roles["eye_color"]]
-        head = result.pixel_data["head_front"]
-        return {r for r, row in enumerate(head) for v in row if v == eye_hex}
+        ).pixel_data["head_front"]
+        means = [sum(_lightness(c) for c in row) / len(row) for row in head]
+        return means.index(min(means))
 
-    assert min(eye_rows(0.45), default=99) > min(eye_rows(0.0), default=0)
+    assert darkest_row(0.45) > darkest_row(0.0)
+
+
+def test_expand_to_aspect_compares_in_pixels_not_fractions():
+    """A Bbox is in fractions; on a non-square image that is not its shape.
+
+    On a 666x1182 portrait, 0.285 x 0.247 reads as "wider than tall" but is
+    190 x 291 pixels — taller than wide. Judging by fractions grows the wrong
+    side, and fit_crop then trims the head's crown back off.
+    """
+    box = Bbox(0.3724, 0.0135, 0.6576, 0.26)
+    grown = expand_to_aspect(box, 8, 8, image_w=666, image_h=1182)
+
+    width_px = (grown.x1 - grown.x0) * 666
+    height_px = (grown.y1 - grown.y0) * 1182
+    assert width_px / height_px == pytest.approx(1.0, abs=0.02)
+    assert grown.y0 == pytest.approx(box.y0) and grown.y1 == pytest.approx(box.y1)
+
+
+def test_expand_to_aspect_defaults_stay_identity_for_a_square_image():
+    box = Bbox(0.4, 0.1, 0.6, 0.5)
+    assert expand_to_aspect(box, 8, 8) == expand_to_aspect(box, 8, 8, image_w=100, image_h=100)

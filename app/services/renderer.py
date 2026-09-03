@@ -207,8 +207,18 @@ def expand_head_box(box: Bbox, top: float, side: float) -> Bbox:
     )
 
 
-def expand_to_aspect(box: Bbox, target_h: int, target_w: int) -> Bbox:
+def expand_to_aspect(
+    box: Bbox, target_h: int, target_w: int, image_w: int = 1, image_h: int = 1
+) -> Bbox:
     """Grow a box to the destination face's aspect ratio, never shrink it.
+
+    ``image_w``/``image_h`` are the source image's pixel dimensions, and they
+    are not optional in practice: a Bbox is in *fractions*, so on a 666x1182
+    portrait a box of 0.285 x 0.247 looks wider than tall while actually being
+    190 x 291 pixels — taller than wide. Comparing aspect ratios in fraction
+    space therefore grows the wrong side, and fit_crop then trims the head's
+    crown and chin back off, which is exactly the failure expand_head_box was
+    added to prevent. The defaults keep the maths identity for a square image.
 
     The alternative — center-cropping the box down to the right aspect — is
     quietly destructive: a head box is taller than the 8×8 face it feeds, so
@@ -223,11 +233,13 @@ def expand_to_aspect(box: Bbox, target_h: int, target_w: int) -> Bbox:
     if height <= 0 or width <= 0:
         return box
 
-    if width / height < want:
-        grow = (height * want - width) / 2.0
+    # Compare in pixels, adjust in fractions.
+    width_px, height_px = width * image_w, height * image_h
+    if width_px / height_px < want:
+        grow = ((height_px * want - width_px) / image_w) / 2.0
         x0, x1, y0, y1 = box.x0 - grow, box.x1 + grow, box.y0, box.y1
     else:
-        grow = (width / want - height) / 2.0
+        grow = ((width_px / want - height_px) / image_h) / 2.0
         x0, x1, y0, y1 = box.x0, box.x1, box.y0 - grow, box.y1 + grow
 
     # Slide back inside the image rather than losing the growth we just added.
@@ -272,6 +284,7 @@ def _render_photo_faces(
     faces: dict[str, np.ndarray] = {}
     sources: dict[str, np.ndarray] = {}
     used: dict[str, Bbox] = {}
+    image_h, image_w = lin.shape[:2]
 
     for key, anchor in PHOTO_FACES.items():
         group, face = key.rsplit("_", 1)
@@ -282,7 +295,7 @@ def _render_photo_faces(
         if anchor == "legs":
             box = _split_box(box, "left" if group == "right_leg" else "right")
 
-        box = expand_to_aspect(box, rect.h, rect.w)
+        box = expand_to_aspect(box, rect.h, rect.w, image_w, image_h)
         crop = _crop(lin, box)
         if crop.size == 0:
             continue
