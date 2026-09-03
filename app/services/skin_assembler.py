@@ -1,10 +1,21 @@
-"""Assemble a 64×64 Minecraft skin PNG from pixel color data."""
+"""Assemble a Minecraft skin PNG from pixel color data.
+
+Scale-agnostic: 1 gives the canonical 64x64, 2 gives 128x128. The grids handed
+in must already match the regions at that scale — the assembler never resizes,
+because a resized texture is a blurred texture.
+"""
 
 from __future__ import annotations
 
 from PIL import Image
 
-from app.services.skin_map import FaceRect, ModelType, PIXEL_KEY_MAP, get_all_regions
+from app.services.skin_map import (
+    PIXEL_KEY_MAP,
+    FaceRect,
+    ModelType,
+    get_all_regions,
+    texture_size,
+)
 
 
 def hex_to_rgba(hex_color: str) -> tuple[int, int, int, int]:
@@ -27,9 +38,7 @@ def paint_face(img: Image.Image, rect: FaceRect, pixels: list[list[str]]) -> Non
             img.putpixel((rect.x + col_idx, rect.y + row_idx), rgba)
 
 
-def validate_pixel_grid(
-    grid: list[list[str]], expected_h: int, expected_w: int
-) -> bool:
+def validate_pixel_grid(grid: list[list[str]], expected_h: int, expected_w: int) -> bool:
     """Check that a pixel grid has the correct dimensions."""
     if len(grid) != expected_h:
         return False
@@ -39,19 +48,22 @@ def validate_pixel_grid(
 def assemble_skin(
     pixel_data: dict[str, list[list[str]]],
     model: ModelType = "classic",
+    scale: int = 1,
 ) -> Image.Image:
-    """Assemble a 64×64 Minecraft skin from Claude's pixel data.
+    """Assemble a Minecraft skin texture from pixel data.
 
     Args:
         pixel_data: Dict mapping keys like "head_front", "body_back", etc.
             to 2D lists of hex color strings (row-major).
         model: "classic" (4px arms) or "slim" (3px arms).
+        scale: 1 for 64x64, 2 for 128x128.
 
     Returns:
-        A 64×64 RGBA PIL Image.
+        An RGBA PIL Image of side ``64 * scale``.
     """
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    regions = get_all_regions(model)
+    side = texture_size(scale)
+    img = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    regions = get_all_regions(model, scale)
 
     for key, pixel_grid in pixel_data.items():
         if key not in PIXEL_KEY_MAP:

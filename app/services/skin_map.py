@@ -6,12 +6,18 @@ Supports both Classic (Steve, 4px arms) and Slim (Alex, 3px arms) models.
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Literal
 
 ModelType = Literal["classic", "slim"]
+
+# The canonical texture is 64x64; scale 2 gives 128x128, and so on.
+BASE_TEXTURE_SIZE = 64
+
+
+def texture_size(scale: int = 1) -> int:
+    """Side length of the texture at this scale."""
+    return BASE_TEXTURE_SIZE * scale
 
 
 @dataclass(frozen=True)
@@ -173,8 +179,22 @@ LEFT_LEG_OVERLAY: dict[str, FaceRect] = {
 }
 
 
-def get_all_regions(model: ModelType) -> dict[str, dict[str, FaceRect]]:
-    """Return all UV regions for the given model type."""
+def _scaled(regions: dict[str, dict[str, FaceRect]], scale: int) -> dict[str, dict[str, FaceRect]]:
+    if scale == 1:
+        return regions
+    return {
+        group: {
+            face: FaceRect(r.x * scale, r.y * scale, r.w * scale, r.h * scale)
+            for face, r in faces.items()
+        }
+        for group, faces in regions.items()
+    }
+
+
+def get_all_regions(model: ModelType, scale: int = 1) -> dict[str, dict[str, FaceRect]]:
+    """Return all UV regions for the given model type, at the given scale."""
+    if scale < 1:
+        raise ValueError(f"scale must be >= 1, got {scale}")
     if model == "classic":
         right_arm = RIGHT_ARM_CLASSIC
         left_arm = LEFT_ARM_CLASSIC
@@ -186,23 +206,26 @@ def get_all_regions(model: ModelType) -> dict[str, dict[str, FaceRect]]:
         right_arm_overlay = RIGHT_ARM_OVERLAY_SLIM
         left_arm_overlay = LEFT_ARM_OVERLAY_SLIM
 
-    return {
-        "head": HEAD,
-        "body": BODY,
-        "right_arm": right_arm,
-        "left_arm": left_arm,
-        "right_leg": RIGHT_LEG,
-        "left_leg": LEFT_LEG,
-        "head_overlay": HEAD_OVERLAY,
-        "body_overlay": BODY_OVERLAY,
-        "right_arm_overlay": right_arm_overlay,
-        "left_arm_overlay": left_arm_overlay,
-        "right_leg_overlay": RIGHT_LEG_OVERLAY,
-        "left_leg_overlay": LEFT_LEG_OVERLAY,
-    }
+    return _scaled(
+        {
+            "head": HEAD,
+            "body": BODY,
+            "right_arm": right_arm,
+            "left_arm": left_arm,
+            "right_leg": RIGHT_LEG,
+            "left_leg": LEFT_LEG,
+            "head_overlay": HEAD_OVERLAY,
+            "body_overlay": BODY_OVERLAY,
+            "right_arm_overlay": right_arm_overlay,
+            "left_arm_overlay": left_arm_overlay,
+            "right_leg_overlay": RIGHT_LEG_OVERLAY,
+            "left_leg_overlay": LEFT_LEG_OVERLAY,
+        },
+        scale,
+    )
 
 
-# Mapping from Claude output keys to (region_group, face_name)
+# Mapping from pixel-grid keys to (region_group, face_name)
 PIXEL_KEY_MAP: dict[str, tuple[str, str]] = {}
 
 for _part in ["head", "body", "right_arm", "left_arm", "right_leg", "left_leg"]:

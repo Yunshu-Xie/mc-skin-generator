@@ -4,72 +4,103 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Minecraft skin generator: upload an image → Gemini AI analyzes it → generates a 64×64 Minecraft skin PNG → 3D preview + download. FastAPI backend, vanilla HTML/JS frontend. Each generation request can pick `gemini-2.5-flash` or `gemini-2.5-flash-lite` (both free-tier) via the `ai_model` field, for A/B testing quality.
+照片 → Minecraft 皮肤：上传图片，AI **只**判断语义（各部位在照片里的 bbox + 角色颜色），像素全部由一条真实的图像处理管线从照片本身推导，输出 64×64 PNG + 3D 预览 + 下载。FastAPI 后端，原生 HTML/JS 前端。
+
+**读代码前先读 `docs/ARCHITECTURE.md`** —— 它解释了每个设计决策背后的原因，这里只列结构。
+
+一句话版：旧管线让模型逐像素画 8×8 的脸，而语言模型没有像素级空间精度，这是"精细度上不去"的根本原因；现在模型只回答"东西在哪、是什么颜色"，像素由 `app/imaging` 计算。
 
 ## Common Commands
 
 ```bash
-# Install dependencies
-pip install fastapi uvicorn openai Pillow python-multipart pydantic-settings pytest httpx ruff
+# 安装依赖
+pip install -e ".[dev]"          # 或：pip install fastapi uvicorn openai Pillow numpy python-multipart pydantic-settings pytest httpx ruff
 
-# Run the development server
+# 开发服务器
 uvicorn app.main:app --reload
 
-# Run all tests
+# 测试
 pytest
+pytest tests/test_renderer.py -v
+pytest tests/test_downscale.py::test_dpid_keeps_an_outlier_that_box_averages_away -v
 
-# Run a single test file / specific test
-pytest tests/test_skin_map.py -v
-pytest tests/test_skin_assembler.py::test_assemble_skin_slim -v
+# 渲染质量对比（不花 API 额度）
+python3 tools/compare.py --demo --eyes 0.385,0.210,0.615,0.250
+python3 tools/compare.py photo.jpg --face 0.38,0.05,0.66,0.27 --eyes 0.43,0.16,0.65,0.19
+python3 tools/compare.py photo.jpg --ai     # 走真实 vision 调用
 
-# Linting
-ruff check .
-ruff format .
+# Lint
+ruff check . && ruff format .
 ```
 
 ## Configuration
 
-`.env` 文件中需要配置：
-- `GEMINI_API_KEY` — Google AI Studio 的 API Key（https://aistudio.google.com/apikey）
-- `GEMINI_BASE_URL` — Gemini 的 OpenAI 兼容端点（默认 `https://generativelanguage.googleapis.com/v1beta/openai/`）
-- `GEMINI_MODEL_FLASH` / `GEMINI_MODEL_FLASH_LITE` — 两个可选模型的实际模型名（默认 `gemini-2.5-flash` / `gemini-2.5-flash-lite`），由请求里的 `ai_model` 字段（`"flash"` / `"flash-lite"`）选择用哪个
-- `GEMINI_DEFAULT_MODEL` — 请求未指定 `ai_model` 时用哪个（默认 `flash`）
-- `MAX_IMAGE_DIMENSION` — 上传图片发给 Vision 前先压缩到的最长边像素（默认 `768`），用来控制图片 token 消耗
+`.env`：
 
-`app/config.py` 通过 pydantic-settings 读取 `.env`。
+- `GEMINI_API_KEY` — Google AI Studio 的 API Key（https://aistudio.google.com/apikey）。**留空则整条管线走离线默认版式**，仍然可以跑通，方便本地开发和测试
+- `GEMINI_BASE_URL` — Gemini 的 OpenAI 兼容端点
+- `GEMINI_MODEL_FLASH` / `GEMINI_MODEL_FLASH_LITE` / `GEMINI_DEFAULT_MODEL` — 逐请求用 `ai_model` 字段（`"flash"` / `"flash-lite"`）选择
+- `MAX_IMAGE_DIMENSION` — 发给 vision 前压缩到的最长边（默认 768）
+- `SKIN_SCALE` — 1 = 64×64，2 = 128×128（默认）
+- 渲染参数：`PALETTE_SIZE`（16）、`FACE_METHOD`（`dpid`）、`MATERIAL_METHOD`（`dominant`）、`PRESHARPEN`（0.45）、`DPID_LAMBDA`（1.4）
+
+`app/config.py` 通过 pydantic-settings 读取。
 
 ## Architecture
 
-### AI Pipeline (`app/services/claude_vision.py`)
-通过 OpenAI 兼容 SDK 调用 Gemini API（`GEMINI_BASE_URL`，标准 Bearer token 认证），**单次调用**设计：
-- 上传图片先用 Pillow 压缩到 `MAX_IMAGE_DIMENSION` 并重新编码为 JPEG（`_prepare_image`），再 base64 发送
-- 一次 Vision 调用同时完成"看图分析"和"画像素"：返回一个 ≤8 色的小调色板 + head 6 个面和 body_front 的调色板索引网格（共 480 个像素，AI 逐像素生成的只有这部分）+ 约 10 个顶层颜色字段（`skin_tone` / `hair_color` / `eye_color` / `shirt_main` / `shirt_shadow` / `arm_main` / `arm_shadow` / `pants_main` / `pants_shadow` / `shoe_color`）
-- `ai_model`（`"flash"` / `"flash-lite"`）通过 `_resolve_model_name` 映射到 `GEMINI_MODEL_FLASH` / `GEMINI_MODEL_FLASH_LITE`，逐请求可选，方便对比两个模型的效果，返回的 `metadata.ai_model` 会回显实际用的是哪个
-- `_decode_indexed_grid` 把索引网格还原成 hex 颜色网格
-- 响应不完整（调色板缺失、网格尺寸不对、必需颜色字段缺失）时整体重试，最多 2 次
+### `app/imaging/` —— 纯图像科学
+无 AI、无 Web、无 Minecraft，进出都是 numpy 数组，全部可数值测试。
 
-### Procedural Fill (`app/services/procedural.py`)
-除了 head 和 body_front，其余 29 个基础区域（body 的其余 5 面、双臂全部 6 面、双腿全部 6 面）**不经过 AI**，由 `generate_procedural_regions` 用上面的顶层颜色字段程序化生成：`flat_fill_with_border` 对每个面做纯色填充 + 1px 边框加深阴影。左右两侧直接复用同一套颜色（不需要真正的像素镜像，因为填充规则本身就是对称的）。这是 token 优化的核心：AI 逐像素生成的区域从 ~4096 降到 480，配合合并为单次调用，单次运行 token 消耗从 ~13k-16k 降到 ~2k-3.5k 量级。
+- **`color.py`** — sRGB ↔ **线性光** ↔ **OKLab**，ΔE，hex 边界转换。这一层之后没有任何代码在 sRGB 数值上做平均——在编码值上求平均没有数学意义，这是最经典的降采样 bug
+- **`downscale.py`** — `box`（精确面积平均）、`dpid`（离本格均值越远权重越大，OKLab 距离）、`dominant`（众数色）；`unsharp` 预锐化补偿 16× 缩小的 MTF 损失；`fit_crop` 裁剪而非拉伸
+- **`quantize.py`** — OKLab 里的加权 k-means（k-means++ 初始化，支持固定中心）；`Palette` 的前若干槽是**锚定的语义角色**，永不被优化器移动
+- **`albedo.py`** — Retinex 近似去阴影：光照是低频的，模糊 OKLab 的 L 得到光照场再减掉。贴图要的是材质本色，不是材质 × 光
+- **`metrics.py`** — SSIM（算在 OKLab 的 L 通道上）、ΔE、`detail`。**这些指标都是面积加权的，没有一个能判断"眼睛还在不在"**，见 ARCHITECTURE §7
 
-### Skin UV Map (`app/services/skin_map.py`)
-所有 Minecraft 64×64 皮肤 UV 坐标，以 `FaceRect(x, y, w, h)` dataclass 表示。`PIXEL_KEY_MAP` 将模型输出的 key（如 `"head_front"`）映射到区域组 + 面名。`get_all_regions(model)` 根据 Classic/Slim 返回正确坐标集。
+### `app/services/layout.py` —— AI 层（语义，不产像素）
+一次 vision 调用返回：`face` / `eyes` / `hair_top` / `torso` / `right_arm` / `left_arm` / `legs` 的归一化 bbox + 7 个角色颜色 + 一句描述。输出约 20 个数字。`analyze_photo` **永不抛异常**：网络失败、JSON 坏掉、字段缺失都退化成默认版式。
 
-### Skin Assembler (`app/services/skin_assembler.py`)
-接收像素数据 dict（AI 解码结果 + procedural 结果合并后的完整 hex 颜色网格）→ 用 Pillow 创建 64×64 RGBA 图片，在正确的 UV 坐标处绘制每个面。验证网格尺寸，静默跳过格式错误的数据。这一层的接口没有变化，仍然只认 `{key: 2D hex 数组}`。
+### `app/services/renderer.py` —— 管线编排
+解码到线性光 → 按 bbox 裁剪（`expand_to_aspect` 把框**扩大**到目标宽高比，不是裁掉，否则头顶和下巴会被切掉）→ 预锐化 → 按面选降采样方法（脸用 `dpid`，衣服四肢用 `dominant`）→ **一次全局加权量化**建立唯一调色板 → 补齐照片拍不到的面 → 全部吸附到该调色板 → 打分。
 
-### API Layer (`app/routers/skin.py`)
-- `POST /api/generate` — 接收 multipart 图片上传 + model 类型 + 可选 `ai_model`（`"flash"`/`"flash-lite"`，缺省用 `GEMINI_DEFAULT_MODEL`），返回 skin_id + skin_url
-- `GET /api/skin/{id}.png` — 从 `skins/` 目录提供生成的 PNG
+`recolor` 因为"整张皮肤共用一张调色板"而只是字符串替换。
 
-### Frontend (`app/static/`)
-纯 HTML/CSS/JS，无构建步骤。使用 skinview3d@3.1.0（CDN）做 3D 皮肤预览（行走动画）。拖拽上传 + Classic/Slim 切换。
+### `app/services/face.py` —— 头部是画出来的
+**唯一一处不从照片推导像素的地方**，因为 8×8 下每个五官都小于一个格子，平均永远画不出特征（详见 ARCHITECTURE §5）。结构来自按发型类别生成的模板，眼睛行由 `eyes` bbox 映射，颜色来自调色板角色，照片只负责把区域内的明度变化加回去。眼睛和嘴豁免调制。`head_mode="photo"` 可切回旧的重采样路径做对比。
+
+### `app/services/clothing.py` / `overlay.py` / `templating.py`
+`clothing.py` 按服装类别程序化生成上身/手臂/腿的模板（鞋子画到小腿四面，不再只画脚底板）。`overlay.py` 输出第二层（`hat_*`）的头发外沿和眼镜，直接产出带透明的十六进制。`templating.py` 是头和衣服共用的 `paint` + `modulate_by_photo`，豁免名单保护只有两格的小特征。`body_mode="photo"` 切回照片采样（保住胸前图案，失去服装结构）。
+
+### `app/services/shading.py` —— 程序化面
+背面/内侧从**同一张调色板**取色，按面朝向做 OKLab 明度偏移 + 柔和的上下渐变。旧的 `flat_fill_with_border`（1px 深色描边）被删掉了——那让每条肢体在游戏里读起来像一个画出来的方框。
+
+### `app/services/skin_map.py` / `skin_assembler.py`
+UV 坐标表与 PNG 组装，**按 `scale` 参数化**：1 = 64×64，2 = 128×128（UV 布局尺度无关，所以只是把每个矩形乘个系数）。仍然只认 `{key: 2D hex 数组}`。
+
+### API (`app/routers/skin.py`)
+- `POST /api/generate` — multipart 上传 + `model`（classic/slim）+ 可选 `ai_model`；返回 skin_id、palette、roles、metrics
+- `POST /api/skin/{id}/recolor` — 换一个调色板颜色，不调 AI、不重渲染
+- `GET /api/skin/{id}.png`
 
 ## Key Design Decisions
 
-- **OpenAI 兼容 SDK**: 使用 `openai` Python 包，通过 `base_url` 指向 Gemini 的 OpenAI 兼容端点，方便将来切换其他兼容服务
-- **逐请求切换模型**: `ai_model=flash` / `flash-lite` 让两个免费额度模型可以不重启服务直接对比效果
-- **Python 3.9 compatibility**: 所有文件使用 `from __future__ import annotations`
-- **No database**: 生成的皮肤以 UUID 文件名保存在 `skins/` 目录
-- **绝大部分程序化生成**: 只有 head + body_front 由 AI 逐像素生成，其余全部由 `procedural.py` 根据顶层颜色字段规则填充，这是 token 消耗的主要优化点
-- **Retry logic**: 单次调用响应不完整时，整体重试最多 2 次（不再是"重试像素生成再合并"，因为现在只有一次调用）
-- **Classic vs Slim**: 唯一区别是手臂 front/back 宽度 4→3px，由 `skin_map.py` 坐标选择处理
+- **AI 不画像素**：语言模型没有像素级空间精度。这是整个重构的前提
+- **贴图存 albedo，不存阴影**：去阴影 + 调色板按材质而非明度聚类 + 取簇的高分位明度；朝向明暗不烘进贴图，交给游戏
+- **一切在线性光 / OKLab 里做**：不在 sRGB 上平均，不用 HSV 表示明度
+- **按内容选降采样方法**：衣服四肢要色块干净（`dominant`）；`dpid` 仍用于 `head_top`
+- **分辨率决定算法**：`head_mode`/`body_mode` 默认 `auto` —— scale 1（8×8 脸）必须绘制，scale 2（16×16 脸）改走照片重采样。见 ARCHITECTURE §9
+- **128×128 是主产物，64×64 是兜底**：原版 Java 只收 64×64，所以每次都导出两份
+- **该采样的采样，该绘制的绘制**：头和衣服都由模板绘制，照片只提供颜色与区域内明暗。管线的每一层都值得问一次这个问题
+- **两层都要用**：基础层 + overlay 共 3264 格，只用一半等于浪费一半
+- **一张调色板管全身**：材质一致性 + 让改色变成 O(1) 操作
+- **语义角色锚定固定槽位**：0=skin_tone … 6=shoe_color
+- **离线可跑**：没有 API Key 时用默认版式，测试与本地开发不需要网络
+- **Python 3.11+**，所有文件 `from __future__ import annotations`
+- **无数据库**：皮肤以 UUID 文件名存在 `skins/`（PNG + 同名 JSON）
+- **Classic vs Slim**：唯一区别是手臂 front/back 宽度 4→3px，由 `skin_map.py` 处理
+
+## 改动这个项目时
+
+- 动了 `app/imaging` 任何数值行为 → 先加数值测试，再改实现
+- 调渲染参数 → 用 `tools/compare.py`，**同时看数字和图**；只看 SSIM 会把你带向"糊掉眼睛"的方向
+- 想加新的语义先验（嘴、眼镜、logo）→ 先读 ARCHITECTURE §5 和 §6，考虑它是不是应该由联合优化自动得出

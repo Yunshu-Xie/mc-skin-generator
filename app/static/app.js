@@ -98,7 +98,7 @@ uploadForm.addEventListener("submit", async (e) => {
         }
 
         statusDiv.hidden = true;
-        showViewer(data.skin_url, data.model, data.metadata);
+        showViewer(data.skin_url, data.model, data);
     } catch (err) {
         statusDiv.hidden = true;
         errorDiv.textContent = `❌ ${err.message}`;
@@ -108,14 +108,20 @@ uploadForm.addEventListener("submit", async (e) => {
 });
 
 // ── 3D Viewer ──
-function showViewer(skinUrl, model, metadata) {
+function showViewer(skinUrl, model, result) {
     viewerSection.hidden = false;
     currentSkinUrl = skinUrl;
 
-    if (metadata && metadata.description) {
+    const metadata = (result && result.metadata) || {};
+    if (metadata.description) {
         const modelLabel = metadata.ai_model === "flash-lite" ? "Flash-Lite" : "Flash";
-        skinDescription.textContent = `[${modelLabel}] ${metadata.description}`;
+        const fallback = metadata.layout_source === "fallback" ? " · 默认版式" : "";
+        skinDescription.textContent = `[${modelLabel}${fallback}] ${metadata.description}`;
     }
+
+    showPalette(result);
+    showFidelity(result);
+    showDownloads(result);
 
     if (viewer) {
         viewer.dispose();
@@ -165,4 +171,61 @@ resetBtn.addEventListener("click", () => {
     generateBtn.disabled = true;
     errorDiv.hidden = true;
     document.getElementById("styleNotes").value = "";
+});
+
+
+// ── Palette & fidelity ──
+// The whole skin is drawn from one palette; the first slots are semantic
+// roles, so a viewer can see at a glance which color is "the shirt".
+function showPalette(result) {
+    const strip = document.getElementById("paletteStrip");
+    const palette = (result && result.palette) || [];
+    strip.innerHTML = "";
+    strip.hidden = palette.length === 0;
+
+    const roleOf = {};
+    Object.entries((result && result.roles) || {}).forEach(([role, i]) => {
+        roleOf[i] = role;
+    });
+
+    palette.forEach((hex, i) => {
+        const swatch = document.createElement("span");
+        swatch.className = roleOf[i] ? "swatch role" : "swatch";
+        swatch.style.background = hex;
+        swatch.title = roleOf[i] ? `${roleOf[i]} · ${hex}` : hex;
+        strip.appendChild(swatch);
+    });
+}
+
+// SSIM and detail are both area-weighted, so they are shown together and
+// neither is called a score — see docs/ARCHITECTURE.md section 7.
+function showFidelity(result) {
+    const line = document.getElementById("fidelity");
+    const head = result && result.metrics && result.metrics.head_front;
+    if (!head) {
+        line.hidden = true;
+        return;
+    }
+    line.textContent =
+        `面部 SSIM ${head.ssim.toFixed(3)} · ΔE ${head.delta_e_mean.toFixed(3)} ` +
+        `· 细节保留 ${head.detail.toFixed(2)}`;
+    line.hidden = false;
+}
+
+
+// ── Downloads ──
+// Vanilla Java only accepts 64x64, so a larger texture always ships with a
+// 64x64 companion and both are offered.
+let currentVanillaUrl = null;
+
+function showDownloads(result) {
+    const button = document.getElementById("downloadVanillaBtn");
+    currentVanillaUrl = (result && result.vanilla_url) || null;
+    button.hidden = !currentVanillaUrl;
+    const size = 64 * ((result && result.scale) || 1);
+    document.getElementById("downloadBtn").textContent = `⬇ 下载 ${size}×${size} .png`;
+}
+
+document.getElementById("downloadVanillaBtn").addEventListener("click", () => {
+    if (currentVanillaUrl) window.location.href = currentVanillaUrl;
 });

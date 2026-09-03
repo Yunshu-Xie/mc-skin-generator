@@ -28,8 +28,7 @@ def test_no_overlaps_classic():
     for i, (label_a, rect_a) in enumerate(rects):
         for label_b, rect_b in rects[i + 1 :]:
             assert not _rects_overlap(rect_a, rect_b), (
-                f"Overlap between {label_a} and {label_b}: "
-                f"{rect_a} vs {rect_b}"
+                f"Overlap between {label_a} and {label_b}: {rect_a} vs {rect_b}"
             )
 
 
@@ -39,8 +38,7 @@ def test_no_overlaps_slim():
     for i, (label_a, rect_a) in enumerate(rects):
         for label_b, rect_b in rects[i + 1 :]:
             assert not _rects_overlap(rect_a, rect_b), (
-                f"Overlap between {label_a} and {label_b}: "
-                f"{rect_a} vs {rect_b}"
+                f"Overlap between {label_a} and {label_b}: {rect_a} vs {rect_b}"
             )
 
 

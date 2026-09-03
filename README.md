@@ -1,114 +1,76 @@
 # mc-skin-generator
 
-A local Minecraft skin generator: upload a photo or image, let Gemini AI design a character from it, and get a ready-to-use 64×64 Minecraft skin PNG with a live 3D preview and one-click download.
+照片 → Minecraft 皮肤。上传一张图，得到一张 **128×128** 的皮肤 PNG（外加一份 64×64 兜底，因为原版 Java 只收这个尺寸），附带浏览器内 3D 预览和一键下载。
 
-Built with FastAPI, vanilla HTML/JS (no build step), Pillow for image assembly, and an OpenAI-compatible client pointed at the Gemini API's OpenAI-compatible endpoint for the AI pipeline. Each request can pick between `gemini-2.5-flash` and `gemini-2.5-flash-lite`, both free-tier, to compare quality/cost.
+关键在于分工：**AI 只判断语义**（脸、眼睛、上身、四肢在照片里的位置，以及各材质的颜色），**像素全部由一条真实的图像处理管线从照片本身推导**——线性光、OKLab、结构保持降采样、全局联合调色板量化。
 
-## Features
+技术栈：FastAPI · numpy · Pillow · 原生 HTML/JS（无构建步骤）· 通过 OpenAI 兼容客户端调用 Gemini。
 
-- **Image → skin** — drop in any JPEG / PNG / WebP / GIF (≤ 5 MB) and get a valid Minecraft skin texture
-- **One AI call, mostly procedural** — a single Vision call draws only the head (6 faces) and body_front pixel-by-pixel (the parts that actually need to look like the photo) plus a handful of top-level clothing colors; everything else (rest of the body, both arms, both legs) is filled in by code
-- **Classic & Slim** — pick Steve (4 px arms) or Alex (3 px arms); the only difference is arm UV widths, handled by the coordinate map
-- **3D preview** — generated skins render in-browser with a walking animation via [skinview3d](https://github.com/bs-community/skinview3d)
-- **Download** — grab the raw 64×64 PNG, drop it straight into Minecraft
+设计原因写在 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**。
 
-## Why mostly-procedural instead of a full AI-painted skin?
+![各降采样方法对比](docs/method-comparison.png)
 
-Asking a model to emit all ~4096 skin pixels is expensive and unreliable — earlier versions used a two-step pipeline (analyze, then paint everything) that could burn 13k+ tokens per run and still hit output-length limits. Since the arms/legs/back of a Minecraft skin are usually flat clothing colors anyway, only the head and shirt front carry the character's actual likeness:
+## 为什么不让 AI 直接画像素
 
-1. **One Vision call** — the model looks at the photo and returns a small palette (≤8 colors) + indexed pixel grids for head (6 faces) and body_front (480 pixels total), plus ~10 top-level hex colors for skin/hair/eyes/shirt/arms/pants/shoes.
-2. **Procedural fill** (`app/services/procedural.py`) — every other face (body back/top/bottom/sides, both arms, both legs) is a flat color fill with a 1px darker border, built directly from those top-level colors. No AI call needed for ~29 of the 36 base regions.
+早期版本让模型逐像素输出 head 六个面和 body_front 的调色板索引（480 个格子）。做不好，而且原因不在 prompt：**语言模型没有像素级空间精度**，它无法可靠地把一只眼睛放进第 2 行第 2 列。
 
-If the AI response is incomplete (bad palette index, missing grid, missing required color), it retries the single call up to 2 times.
+现在模型回答的是"东西在哪、是什么颜色"——大约 20 个数字。更便宜、更快、几乎不再重试，而像素质量由可测试的数值代码决定。
 
-## Quick start
+## 特性
+
+- **照片 → 皮肤**：JPEG / PNG / WebP / GIF（≤ 5 MB）
+- **色彩正确**：一切在线性光和 OKLab 里计算。不在 sRGB 数值上求平均（那是最经典的降采样 bug），不用 HSV 当明度
+- **按内容选降采样**：脸用 DPID（保住五官），衣服四肢用众数色（保住干净的色块边界，白衬衫上的红条纹不会糊成粉）
+- **一张调色板管全身**：材质在各部位之间保持一致；前 7 个槽是固定的语义角色
+- **免费改色**：`POST /api/skin/{id}/recolor` 换掉一个调色板颜色——不调 AI、不重新渲染
+- **自带质量指标**：每次生成返回 SSIM / ΔE / 细节保留，调参不靠感觉
+- **两种分辨率**：128×128 为主（Bedrock 原生／Java 装 HD Skins 或 CustomSkinLoader），每次同时导出 64×64 兜底。分辨率还决定算法——8×8 的脸必须绘制，16×16 的脸改走照片重采样
+- **Classic & Slim**、**3D 预览**（[skinview3d](https://github.com/bs-community/skinview3d)）、**直接下载**
+- **离线可跑**：没有 API Key 时用默认版式，仍能跑通整条管线
+
+## 快速开始
 
 ```bash
 git clone https://github.com/Yunshu-Xie/mc-skin-generator.git
 cd mc-skin-generator
 
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
 
-cp .env.example .env
-# Edit .env and paste your Gemini API key (from https://aistudio.google.com/apikey)
-
-.venv/bin/uvicorn app.main:app --reload
-# Open http://localhost:8000
+cp .env.example .env      # 填入 GEMINI_API_KEY（留空也能跑，走默认版式）
+uvicorn app.main:app --reload
 ```
 
-## Configuration
+打开 http://127.0.0.1:8000
 
-`.env` reads these variables (see `.env.example`):
+## 调参
 
-| Var | Default | Purpose |
-|---|---|---|
-| `GEMINI_API_KEY` | _(required)_ | Google AI Studio API key |
-| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai/` | Gemini's OpenAI-compatible endpoint |
-| `GEMINI_MODEL_FLASH` | `gemini-2.5-flash` | Model used when a request sends `ai_model=flash` |
-| `GEMINI_MODEL_FLASH_LITE` | `gemini-2.5-flash-lite` | Model used when a request sends `ai_model=flash-lite` |
-| `GEMINI_DEFAULT_MODEL` | `flash` | Which of the two above to use when a request omits `ai_model` |
-| `MAX_IMAGE_DIMENSION` | `768` | Uploaded photo is downscaled to this many px (longest side) and re-encoded as JPEG before sending, to cut vision input tokens |
+```bash
+# 不花 API 额度，用内置的合成人像看三种降采样方法的差别
+python3 tools/compare.py --demo --eyes 0.385,0.210,0.615,0.250
 
-`app/config.py` reads `.env` via pydantic-settings. Generated skins are saved to `skins/` (max upload size 5 MB).
+# 自己的照片，手工给出两个关键框
+python3 tools/compare.py photo.jpg --face 0.38,0.05,0.66,0.27 --eyes 0.43,0.16,0.65,0.19
 
-## Architecture
-
-```
-app/
-├── config.py                   # pydantic-settings, reads .env
-├── main.py                     # FastAPI + CORS + static mount + skins dir
-├── models/schemas.py           # Pydantic request/response shapes
-├── routers/
-│   └── skin.py                 # POST /api/generate, GET /api/skin/{id}.png
-├── services/
-│   ├── claude_vision.py        # Gemini (OpenAI-compatible) client → single call, head+body_front pixels + colors
-│   ├── procedural.py           # flat-fill + border shading for the rest of the body/arms/legs
-│   ├── skin_map.py             # 64×64 UV coordinates (FaceRect) for Classic/Slim
-│   └── skin_assembler.py       # pixel data → 64×64 RGBA PNG via Pillow
-└── static/                     # vanilla HTML/CSS/JS, no build step
+# 走真实 vision 调用
+python3 tools/compare.py photo.jpg --ai
 ```
 
-### Generation flow
-
-1. Front-end `POST /api/generate` with the image (multipart) + model type (`classic` / `slim`)
-2. `claude_vision.generate_skin_data` resizes the photo, makes the single Vision call, decodes the indexed head/body_front grids, and merges in `procedural.generate_procedural_regions` for everything else
-3. `skin_assembler.assemble_skin` draws each face at its correct UV rectangle into a 64×64 RGBA image
-4. The PNG is saved to `skins/<id>.png` and the front-end renders it with skinview3d
-
-### UV map (`skin_map.py`)
-
-Every Minecraft skin face is a `FaceRect(x, y, w, h)` on the 64×64 texture, covering both base and overlay (hat / jacket / sleeves / pants) layers. `PIXEL_KEY_MAP` maps model output keys (e.g. `"head_front"`, `"hat_top"`) to a region group + face name, and `get_all_regions(model)` returns the right coordinate set for Classic vs Slim.
+**同时看数字和图。** 这个尺度下 SSIM 会误导你：它被大片平坦区域主导，一个把眼睛平均掉、把脸颊做准的方法反而得分更高。理由和真正的解法见 ARCHITECTURE §7 与 §6。
 
 ## API
 
-| Method | Path | Body | Returns |
-|---|---|---|---|
-| `POST` | `/api/generate` | multipart: `image`, `model` (`classic`/`slim`), `style_notes`, `ai_model` (`flash`/`flash-lite`) | `{ skin_id, skin_url, model, metadata }` (`metadata.ai_model` echoes which model ran) |
-| `GET` | `/api/skin/{id}.png` | — | the generated PNG (404 if missing) |
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/generate` | multipart 上传 + `model`（classic/slim）+ 可选 `ai_model`。返回 `skin_id` / `palette` / `roles` / `metrics` |
+| `POST` | `/api/skin/{id}/recolor` | `{"old_color": "#3B5998", "new_color": "#B03030"}`。不调 AI |
+| `GET` | `/api/skin/{id}.png` | 下载主贴图；`?vanilla=1` 取 64×64 兜底 |
 
-`skin_id` is validated as alphanumeric to prevent path traversal.
-
-## Development
+## 测试
 
 ```bash
-pytest          # all mocked — does not call Gemini
+pytest           # 132 项，含色彩科学的数值回归测试
 ruff check .
-ruff format .
-mypy app
 ```
 
-Tests cover the UV map, the skin assembler, and the API layer with the AI pipeline mocked, so no network calls are made.
-
-## Key design decisions
-
-- **OpenAI-compatible SDK** — uses the `openai` package with `base_url` pointed at Gemini's OpenAI-compatible endpoint, so swapping in another compatible provider is trivial
-- **Per-request model choice** — `ai_model=flash` vs `flash-lite` lets you A/B the two free-tier Gemini models without restarting the server; `GEMINI_DEFAULT_MODEL` picks the default when omitted
-- **No database** — generated skins are plain PNG files named by a short UUID in `skins/`
-- **Mostly procedural** — only head + body_front are AI-painted pixel-by-pixel; the rest is a deterministic flat-fill from top-level colors (`app/services/procedural.py`), which is most of the token savings
-- **Retry** — an incomplete AI response (bad palette index, missing grid, missing required color) triggers up to 2 retries of the single call
-- **Classic vs Slim** — the sole difference is arm front/back width (4 → 3 px), resolved purely in `skin_map.py`
-
-## License
-
-MIT
+其中 `tests/test_color.py::test_averaging_in_srgb_is_wrong` 把 gamma 这件事钉成了回归测试：黑与白的正确中间调是 sRGB 188，不是 128。

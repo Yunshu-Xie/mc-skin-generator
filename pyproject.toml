@@ -1,16 +1,29 @@
+# Pin the backend explicitly rather than letting pip guess it.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "mc-skin-generator"
 version = "0.1.0"
-description = "Minecraft skin generator powered by CodeBuddy AI"
+description = "Photo → Minecraft skin, by image processing with AI used only for semantics"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "openai>=1.30",
     "Pillow>=10.4",
+    "numpy>=1.26",
     "python-multipart>=0.0.9",
     "pydantic-settings>=2.4",
 ]
+
+# `app` is the only importable package. Without this, setuptools' flat-layout
+# auto-discovery also picks up `skins/` — the runtime output directory, which
+# only exists after the first generation — and refuses to build with
+# "Multiple top-level packages discovered in a flat-layout".
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [project.optional-dependencies]
 dev = [

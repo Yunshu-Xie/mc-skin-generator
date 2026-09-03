@@ -1,7 +1,5 @@
 """Tests for skin_assembler — PNG generation from pixel data."""
 
-from PIL import Image
-
 from app.services.skin_assembler import assemble_skin, hex_to_rgba, validate_pixel_grid
 
 
@@ -80,14 +78,6 @@ def test_assemble_skin_slim():
 def test_full_classic_skin_assembly():
     """Assemble a full skin with all 36 base regions."""
     pixel_data = {}
-    parts = {
-        "head": (8, 8),
-        "body": None,  # custom sizes
-        "right_arm": None,
-        "left_arm": None,
-        "right_leg": None,
-        "left_leg": None,
-    }
 
     # Head: all 8×8
     for face in ["front", "back", "top", "bottom", "left", "right"]:
@@ -118,6 +108,6 @@ def test_full_classic_skin_assembly():
     img = assemble_skin(pixel_data, "classic")
     assert img.size == (64, 64)
     # Spot check a few key locations
-    assert img.getpixel((8, 8))[:3] == (0xC4, 0xA8, 0x82)   # head front
+    assert img.getpixel((8, 8))[:3] == (0xC4, 0xA8, 0x82)  # head front
     assert img.getpixel((20, 20))[:3] == (0x3B, 0x59, 0x98)  # body front
-    assert img.getpixel((4, 20))[:3] == (0x1A, 0x1A, 0x3E)   # right leg front
+    assert img.getpixel((4, 20))[:3] == (0x1A, 0x1A, 0x3E)  # right leg front
